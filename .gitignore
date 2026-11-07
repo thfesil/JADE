@@ -482,3 +482,12 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Jade native engine binaries and simulated database files
+native/bin/
+*.dit
+*.jfm
+data_simulated/
+test_database/
+test_db_fresh/
+

@@ -82,3 +82,19 @@ flowchart TD
   3. Validacao da compilacao com zero erros e inicializacao do repositorio Git local.
 - **Recomendacoes Tecnicas:**
   - Implementar as declaracoes P/Invoke de Jet Blue em Jade.Native e criar o primeiro teste de criacao de banco de dados .dit em Jade.Tests.
+
+### [07/11/2026] - Implementacao do Motor Nativo C e Validacao ESE NTDS.DIT Jade 1 (Rev 2)
+- **Modelo:** Gemini 3.8 Flash
+- **Contexto:** Construcao do nucleo nativo de alta performance em C para emulacao fiel do Active Directory via esent.dll.
+- **Acoes Executadas:**
+  1. Construcao da camada de contratos em native/include/jade.h com definicoes completas de classes de objeto (User, Group, OrganizationalUnit, Container), flags UAC e estruturas de dados.
+  2. Implementacao do motor de persistencia em native/src/jade_core.c:
+     - Inicializacao da instancia ESE com paginacao de 8 KB (JET_paramDatabasePageSize).
+     - Criacao automatica da tabela datatable com chave primaria DNT autoincremental e indices de busca O(1) na B+Tree (DNT_Index, PDNT_Index, SAM_Index, GUID_Index).
+     - Resolucao da exigencia de terminacao em barra invertida dos caminhos de logs e temporarios do ESE (JET_paramTempPath, JET_paramLogFilePath, JET_paramSystemPath), eliminando o erro JET_errFileAccessDenied (-1032).
+     - Geracao automatica de GUIDs unicos de 128 bits via CoCreateGuid (ole32) para evitar colisoes no indice unico de GUIDs.
+     - Implementacao da tabela fsmo_table e maquina de alocacao de RIDs com capacidade de simulacao injetavel de esgotamento (erro Win32 8209).
+     - Suporte a exclusao logica (Tombstone) atraves da marcacao isDeleted e alteracao controlada do sAMAccountName.
+  3. Desenvolvimento de suite de auto-validacao em native/src/main.c contendo 8 etapas de teste ponta a ponta com 100% de sucesso.
+- **Recomendacoes Tecnicas:**
+  - Integrar os contratos exportados da biblioteca jade.dll na camada C# gerenciada (Jade.Native e Jade.Core) e conectar a suite de testes automatizados do xUnit.
