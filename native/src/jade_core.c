@@ -235,7 +235,11 @@ JADE_API int jade_db_open(const char* base_dir, const char* db_name, bool create
     char log_dir_param[MAX_PATH];
     snprintf(log_dir_param, MAX_PATH, "%s\\logs\\", base_dir);
 
-    JET_ERR err = JetCreateInstanceA(&db->instance, "JadeEngineInstance");
+    static volatile LONG g_instance_counter = 0;
+    char inst_name[64];
+    snprintf(inst_name, sizeof(inst_name), "Jade_%lu_%ld", GetCurrentProcessId(), InterlockedIncrement(&g_instance_counter));
+
+    JET_ERR err = JetCreateInstanceA(&db->instance, inst_name);
     if (err != JET_errSuccess) {
         free(db);
         return JADE_ERR_INIT_FAILED;

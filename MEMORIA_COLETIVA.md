@@ -107,5 +107,6 @@ flowchart TD
   2. Implementacao de Jade.Core com JadeDatabase.cs, JadeDirectoryEntry.cs, JadeEnums.cs e JadeException.cs.
   3. Criacao da suite de testes xUnit em tests/Jade.Tests/JadeDatabaseTests.cs com 6 casos de teste cobrindo todas as operacoes do Active Directory emulado.
   4. Execucao de dotnet test com 100% de aprovacao (6 de 6 testes aprovados).
+  5. Resolucao de colisao de instancias concorrentes atraves de nomes unicos dinamicos por processo (GetCurrentProcessId + InterlockedIncrement), permitindo execucao paralela em multithreading sem erro JET_errInstanceNameInUse.
 - **Recomendacoes Tecnicas:**
   - Conectar a biblioteca Jade.Core ao repositorio do projeto Atom para servir como provider emulado de desenvolvimento local do Active Directory.
