@@ -25,4 +25,11 @@
     <ProjectReference Include="..\..\src\Jade.Native\Jade.Native.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\native\bin\jade.dll" Condition="Exists('..\..\native\bin\jade.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </None>
+  </ItemGroup>
+
 </Project>

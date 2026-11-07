@@ -4,14 +4,12 @@ Jade e um emulador autonomo, leve e de alta fidelidade do motor de banco de dado
 
 ---
 
-## Novidades Recentes (Jade 1 - Rev 2)
+## Novidades Recentes (Jade 1 - Rev 3)
 
-* Implementacao completa do motor nativo em C (jade.dll e jade.exe) com persistencia real em formato ESE B+Tree.
-* Modelagem e criacao da tabela datatable espelhando a estrutura interna do NTDS.DIT com DNT (chave primaria autoincremental), PDNT (Parent DNT) e indices B+Tree dedicados (DNT_Index, PDNT_Index, SAM_Index, GUID_Index).
-* Suporte nativo aos atributos de seguranca e identidade: sAMAccountName, userPrincipalName, unicodePwd, userAccountControl (UAC 512 ativo / 514 desativado), objectGUID com geracao automatica de 128 bits e objectSid.
-* Criacao da tabela fsmo_table para gestao do RID Pool Master e alocacao sequencial de RIDs, incluindo modulo de injecao de falhas com emulacao do erro Win32 8209 (ERROR_DS_RIDM_UNWILLING_TO_PERFORM / 00002011).
-* Implementacao do ciclo de vida de exclusao logica (Tombstone) atraves da marcacao isDeleted e renomeacao automatica de sAMAccountName.
-* Suite de auto-validacao em 8 etapas com 100% de sucesso e finalizacao transacional limpa.
+* Conexao integral da camada gerenciada .NET 8 com o motor nativo em C atraves de P/Invoke de alta performance e DllImportResolver dinamico baseado em AppContext.BaseDirectory.
+* Implementacao da camada Jade.Native com mapeamento tipado de structs e metodos de interoperabilidade Win32 Cdecl.
+* Implementacao da camada de dominio Jade.Core com a classe de controle JadeDatabase, modelo de dados JadeDirectoryEntry e gestao automatica de ciclo de vida IDisposable.
+* Bateria de testes unitarios automatizados em xUnit no projeto Jade.Tests com 100% de aprovacao cobrindo criacao de banco, busca indexada B+Tree por sAMAccountName, controle de flags UAC 512/514, hashing de senhas, simulacao de esgotamento de RIDs (Win32 8209) e ciclo de vida de exclusao Tombstone.
 
 ---
 
@@ -23,8 +21,8 @@ Jade e um emulador autonomo, leve e de alta fidelidade do motor de banco de dado
   * **src/main.c**: Executavel de linha de comando e suite de auto-teste.
   * **Makefile**: Automacao de compilacao compativel com MinGW-w64 (GCC).
 * **src/Jade.Native**: Interoperabilidade C# gerenciada via P/Invoke com a biblioteca jade.dll e esent.dll.
-* **src/Jade.Core**: Camada de dominio e servicos de alto nivel para emulacao do Active Directory.
-* **tests/Jade.Tests**: Suite automatizada de testes transacionais e de estresse.
+* **src/Jade.Core**: Camada de dominio e servicos de alto nivel para emulacao do Active Directory (JadeDatabase, JadeDirectoryEntry, JadeException).
+* **tests/Jade.Tests**: Suite automatizada de testes xUnit cobrindo persistencia, transacoes e cenarios de falha FSMO.
 
 ---
 

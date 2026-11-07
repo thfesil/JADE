@@ -98,3 +98,14 @@ flowchart TD
   3. Desenvolvimento de suite de auto-validacao em native/src/main.c contendo 8 etapas de teste ponta a ponta com 100% de sucesso.
 - **Recomendacoes Tecnicas:**
   - Integrar os contratos exportados da biblioteca jade.dll na camada C# gerenciada (Jade.Native e Jade.Core) e conectar a suite de testes automatizados do xUnit.
+
+### [07/11/2026] - Integracao Gerenciada .NET 8 e Suite de Testes xUnit Jade 1 (Rev 3)
+- **Modelo:** Gemini 3.8 Flash
+- **Contexto:** Conexao da camada .NET com a biblioteca nativa jade.dll e validacao dos testes automatizados.
+- **Acoes Executadas:**
+  1. Construcao de Jade.Native contendo NativeTypes.cs e NativeMethods.cs com DllImportResolver dinamico baseado em AppContext.BaseDirectory.
+  2. Implementacao de Jade.Core com JadeDatabase.cs, JadeDirectoryEntry.cs, JadeEnums.cs e JadeException.cs.
+  3. Criacao da suite de testes xUnit em tests/Jade.Tests/JadeDatabaseTests.cs com 6 casos de teste cobrindo todas as operacoes do Active Directory emulado.
+  4. Execucao de dotnet test com 100% de aprovacao (6 de 6 testes aprovados).
+- **Recomendacoes Tecnicas:**
+  - Conectar a biblioteca Jade.Core ao repositorio do projeto Atom para servir como provider emulado de desenvolvimento local do Active Directory.
