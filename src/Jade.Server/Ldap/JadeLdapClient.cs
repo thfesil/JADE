@@ -8,6 +8,7 @@ using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Jade.Core;
 
 namespace Jade.Server.Ldap
 {
@@ -222,6 +223,7 @@ namespace Jade.Server.Ldap
             string userPrincipalName,
             string? initialPassword = null,
             uint userAccountControl = 512,
+            JadeAccessLevel accessLevel = JadeAccessLevel.DomainUser,
             CancellationToken ct = default)
         {
             EnsureConnected();
@@ -238,6 +240,7 @@ namespace Jade.Server.Ldap
                         WriteAttr(attrs, "sAMAccountName", Encoding.UTF8.GetBytes(samAccountName));
                         WriteAttr(attrs, "userPrincipalName", Encoding.UTF8.GetBytes(userPrincipalName));
                         WriteAttr(attrs, "userAccountControl", Encoding.UTF8.GetBytes(userAccountControl.ToString(CultureInfo.InvariantCulture)));
+                        WriteAttr(attrs, "accessLevel", Encoding.UTF8.GetBytes(accessLevel.ToString()));
 
                         if (initialPassword != null)
                         {
@@ -261,6 +264,15 @@ namespace Jade.Server.Ldap
                 dn,
                 "userAccountControl",
                 Encoding.UTF8.GetBytes(newUac.ToString(CultureInfo.InvariantCulture)),
+                ct).ConfigureAwait(false);
+        }
+
+        public async Task<LdapOperationResponse> ModifyAccessLevelAsync(string dn, JadeAccessLevel newLevel, CancellationToken ct = default)
+        {
+            return await ModifyAttributeAsync(
+                dn,
+                "accessLevel",
+                Encoding.UTF8.GetBytes(newLevel.ToString()),
                 ct).ConfigureAwait(false);
         }
 

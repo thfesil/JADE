@@ -4,14 +4,15 @@ Jade e um emulador autonomo, leve e de alta fidelidade de Controlador de Dominio
 
 ---
 
-## Novidades Recentes (Jade 1 - Rev 4)
+## Novidades Recentes (Jade 1 - Rev 5)
 
-* Implementacao do executavel autonomo de Controlador de Dominio emulado (**Jade.Server** / `jade-server.exe`), operando como um servidor Active Directory completo em rede.
-* Suporte nativo ao protocolo binario ASN.1 / BER LDAP v3 (RFC 4511) cobrindo `BindRequest`, `SearchRequest` (incluindo descoberta `RootDSE`), `AddRequest`, `ModifyRequest`, `DelRequest`, `UnbindRequest` e `ExtendedRequest`.
-* Camada criptografica TLS 1.2 / TLS 1.3 com geracao automatica de certificado X.509 RSA-2048 (`TlsCertificateManager`) compativel com o SChannel do Windows, suportando tanto **LDAPS implicito (porta 636 / 6360)** quanto elevacao dinamica de canal via **StartTLS (OID `1.3.6.1.4.1.1466.20037`)**.
-* Politica de seguranca criptografica para senhas (`unicodePwd`): exigencia de canal protegido TLS (rejeitando tentativas em texto claro com erro oficial `DSID-0C090446` / `LDAP_UNWILLING_TO_PERFORM`), decodificacao do formato UTF-16LE delimitado por aspas duplas e armazenamento de hash HMAC-SHA256 com verificacao em tempo constante (`JadeSecurity`).
-* Emissao de subcodigos de diagnostico autenticos do Active Directory durante autenticacao (`data 525` para usuario inexistente, `data 52e` para credenciais invalidas e `data 533` para conta desativada via UAC 514) e geracao binaria de `objectSid` (`S-1-5-21-...-RID`).
-* Suite de testes xUnit ampliada com 100% de aprovacao (8 de 8 testes aprovados) e modo de auto-validacao de rede (`jade-server.exe --self-test`).
+* Implementacao de **Console Administrativo Interativo (`JADE-DC>`)** diretamente no executavel `jade-server.exe`, permitindo gerenciar o Controlador de Dominio em tempo real via terminal (`user create`, `user list`, `user show`, `user enable`, `user disable`, `user passwd`, `user role`, `user auth`, `user delete`, `rid exhaust on|off`, `status`, `help` e `quit`).
+* Arquitetura de **Controle de Acesso Baseado em Papeis (RBAC)** com **4 Niveis de Acesso Corporativos** persistidos nativamente no `ntds.dit` e aplicados sobre todas as sessoes LDAP/LDAPS:
+  * **DomainUser (`0` - `CN=Domain Users`, RID `513`)**: Autentica (`BindRequest`), realiza buscas (`SearchRequest`) e altera exclusivamente a propria senha (`unicodePwd`). Bloqueado ao tentar criar, desativar ou excluir contas.
+  * **SecurityAuditor (`1` - `CN=Guests`, RID `546`)**: Acesso estritamente de leitura (`BindRequest` e `SearchRequest`) voltado para servicos de auditoria e SIEM. Qualquer operacao de escrita (`Add`, `Modify`, `Delete`) e rejeitada com codigo LDAP `50` (`LDAP_INSUFFICIENT_ACCESS_RIGHTS`).
+  * **AccountOperator (`2` - `CN=Account Operators`, RID `548`)**: Permissao delegada para criar, ativar, desativar, redefinir senhas e excluir contas de `DomainUser`, `SecurityAuditor` e `AccountOperator`, porém bloqueado pelo **AdminSDHolder** ao tentar criar ou modificar contas `DomainAdmin`.
+  * **DomainAdmin (`3` - `CN=Domain Admins`, RID `512`, `adminCount=1`)**: Controle administrativo irrestrito sobre o Controlador de Dominio e protegido contra escalacao de privilegios por **AdminSDHolder** (`DSID-03150E49`).
+* Suite de testes xUnit ampliada com 100% de aprovacao (9 de 9 testes aprovados) e auto-teste expandido (`jade-server.exe --self-test` com 9 etapas).
 
 ---
 

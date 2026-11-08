@@ -110,6 +110,7 @@ JADE_API int jade_add_object(jade_db_t* db, const jade_object_t* obj, uint32_t* 
 JADE_API int jade_find_by_sam(jade_db_t* db, const wchar_t* sam, jade_object_t* out_obj);
 JADE_API int jade_find_by_dnt(jade_db_t* db, uint32_t dnt, jade_object_t* out_obj);
 JADE_API int jade_modify_uac(jade_db_t* db, uint32_t dnt, uint32_t new_uac);
+JADE_API int jade_modify_ncdnt(jade_db_t* db, uint32_t dnt, uint32_t new_ncdnt);
 JADE_API int jade_set_password(jade_db_t* db, uint32_t dnt, const uint8_t* pwd_bytes, uint32_t pwd_len);
 JADE_API int jade_delete_object(jade_db_t* db, uint32_t dnt, bool tombstone);
 

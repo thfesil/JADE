@@ -547,6 +547,34 @@ JADE_API int jade_modify_uac(jade_db_t* db, uint32_t dnt, uint32_t new_uac) {
     return JADE_OK;
 }
 
+JADE_API int jade_modify_ncdnt(jade_db_t* db, uint32_t dnt, uint32_t new_ncdnt) {
+    if (!db) return JADE_ERR_INIT_FAILED;
+
+    JET_TABLEID tableid;
+    JET_ERR err = JetOpenTableA(db->sesid, db->dbid, "datatable", NULL, 0, 0, &tableid);
+    if (err != JET_errSuccess) return JADE_ERR_TABLE_CREATE_FAILED;
+
+    err = JetSetCurrentIndexA(db->sesid, tableid, "DNT_Index");
+    JetMakeKey(db->sesid, tableid, &dnt, sizeof(dnt), JET_bitNewKey);
+
+    err = JetSeek(db->sesid, tableid, JET_bitSeekEQ);
+    if (err != JET_errSuccess) {
+        JetCloseTable(db->sesid, tableid);
+        return JADE_ERR_RECORD_NOT_FOUND;
+    }
+
+    JetBeginTransaction(db->sesid);
+    JetPrepareUpdate(db->sesid, tableid, JET_prepReplace);
+    JetSetColumn(db->sesid, tableid, db->col_ncdnt, &new_ncdnt, sizeof(new_ncdnt), 0, NULL);
+    int64_t now = get_current_filetime();
+    JetSetColumn(db->sesid, tableid, db->col_when_changed, &now, sizeof(now), 0, NULL);
+    JetUpdate(db->sesid, tableid, NULL, 0, NULL);
+    JetCommitTransaction(db->sesid, 0);
+
+    JetCloseTable(db->sesid, tableid);
+    return JADE_OK;
+}
+
 JADE_API int jade_set_password(jade_db_t* db, uint32_t dnt, const uint8_t* pwd_bytes, uint32_t pwd_len) {
     if (!db || !pwd_bytes) return JADE_ERR_INIT_FAILED;
 

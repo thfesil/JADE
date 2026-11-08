@@ -66,6 +66,9 @@ namespace Jade.Native
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "jade_modify_uac")]
         public static extern int ModifyUac(IntPtr db, uint dnt, uint newUac);
 
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "jade_modify_ncdnt")]
+        public static extern int ModifyNcdnt(IntPtr db, uint dnt, uint newNcdnt);
+
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "jade_set_password")]
         public static extern int SetPassword(IntPtr db, uint dnt, byte[] pwd, uint pwdLen);
 

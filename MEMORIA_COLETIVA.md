@@ -126,3 +126,19 @@ flowchart TD
   5. Configuracao permanente da variavel de ambiente DOTNET_ROOT apontando para F:\DevTools\dotnet.
 - **Recomendacoes Tecnicas:**
   - Manter sincronizada a integracao de rede LDAPS junto aos provedores de diretorio da plataforma Atom.
+
+### [07/11/2026] - Implementacao do Console Administrativo Interativo e 4 Niveis de Acesso RBAC com Protecao AdminSDHolder Jade 1 (Rev 5)
+- **Modelo:** Gemini 4
+- **Contexto:** Adicao de console administrativo interativo (CLI Shell) no executavel jade-server.exe e controle de acesso baseado em papeis (RBAC) com 4 niveis hierarquicos e protecao AdminSDHolder no servidor LDAP/LDAPS.
+- **Acoes Executadas:**
+  1. Expansao do motor nativo C (native/include/jade.h e native/src/jade_core.c) com a funcao exportada jade_modify_ncdnt para atualizacao transacional de nivel de acesso no NTDS.DIT.
+  2. Criacao do enumerador JadeAccessLevel em Jade.Core com 4 niveis corporativos:
+     - DomainUser (0 - CN=Domain Users, RID 513): Autentica, consulta e altera apenas a propria senha.
+     - SecurityAuditor (1 - CN=Guests, RID 546): Acesso estrito somente leitura para auditoria.
+     - AccountOperator (2 - CN=Account Operators, RID 548): Gerencia contas comuns e operadores, bloqueado em contas DomainAdmin.
+     - DomainAdmin (3 - CN=Domain Admins, RID 512, adminCount=1): Controle total e protegido pelo mecanismo AdminSDHolder.
+  3. Implementacao da imposicao de RBAC e AdminSDHolder em JadeDomainControllerServer.cs (retornando codigo LDAP 50 LDAP_INSUFFICIENT_ACCESS_RIGHTS / DSID-03150E49) e exposicao dos atributos accessLevel, adminCount, primaryGroupID e memberOf nas buscas LDAP.
+  4. Construcao do Console Administrativo Interativo (JADE-DC>) em Program.cs suportando os comandos user create, user list, user show, user enable, user disable, user passwd, user role, user auth, user delete, rid exhaust on|off, status, help e quit.
+  5. Validacao automatizada via xUnit (9 de 9 testes aprovados) e jade-server.exe --self-test (9 etapas aprovadas).
+- **Recomendacoes Tecnicas:**
+  - Utilizar os perfis AccountOperator e DomainAdmin para testes de segregacao de funcoes (SoD) na plataforma Atom.

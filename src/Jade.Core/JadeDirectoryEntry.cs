@@ -9,10 +9,39 @@ namespace Jade.Core
         public uint Dnt { get; set; }
         public uint Pdnt { get; set; }
         public uint Ncdnt { get; set; }
+
+        public JadeAccessLevel AccessLevel
+        {
+            get => Enum.IsDefined(typeof(JadeAccessLevel), Ncdnt) ? (JadeAccessLevel)Ncdnt : JadeAccessLevel.DomainUser;
+            set => Ncdnt = (uint)value;
+        }
+
+        public int AdminCount => AccessLevel == JadeAccessLevel.DomainAdmin ? 1 : 0;
+
+        public uint PrimaryGroupRid => AccessLevel switch
+        {
+            JadeAccessLevel.DomainAdmin => 512u,
+            JadeAccessLevel.AccountOperator => 548u,
+            JadeAccessLevel.SecurityAuditor => 546u,
+            _ => 513u
+        };
+
+        public string GetGroupDistinguishedName(string domainDn = "DC=jade,DC=local")
+        {
+            return AccessLevel switch
+            {
+                JadeAccessLevel.DomainAdmin => $"CN=Domain Admins,CN=Users,{domainDn}",
+                JadeAccessLevel.AccountOperator => $"CN=Account Operators,CN=Builtin,{domainDn}",
+                JadeAccessLevel.SecurityAuditor => $"CN=Security Auditors,CN=Builtin,{domainDn}",
+                _ => $"CN=Domain Users,CN=Users,{domainDn}"
+            };
+        }
+
         public JadeObjectClass ObjectClass { get; set; }
         public string SamAccountName { get; set; } = string.Empty;
         public string UserPrincipalName { get; set; } = string.Empty;
         public UserAccountControl UserAccountControl { get; set; } = UserAccountControl.NormalAccount;
+        public bool IsEnabled => (UserAccountControl & UserAccountControl.AccountDisable) == 0;
         public byte[]? UnicodePassword { get; set; }
         public Guid ObjectGuid { get; set; }
         public byte[]? ObjectSid { get; set; }

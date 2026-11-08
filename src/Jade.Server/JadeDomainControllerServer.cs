@@ -107,12 +107,13 @@ namespace Jade.Server
                 ObjectClass = JadeObjectClass.User,
                 SamAccountName = "Administrator",
                 UserPrincipalName = $"Administrator@{_options.DnsHostName.Substring(_options.DnsHostName.IndexOf('.') + 1)}",
-                UserAccountControl = UserAccountControl.NormalAccount | UserAccountControl.DontExpirePassword
+                UserAccountControl = UserAccountControl.NormalAccount | UserAccountControl.DontExpirePassword,
+                AccessLevel = JadeAccessLevel.DomainAdmin
             };
             uint adminDnt = _db.AddObject(adminEntry);
             _db.SetPassword(adminDnt, _options.DefaultAdminPassword);
 
-            Log($"Hierarquia inicial provisionada no NTDS.DIT (Administrator DNT={adminDnt}).");
+            Log($"Hierarquia inicial provisionada no NTDS.DIT (Administrator DNT={adminDnt}, Nivel=DomainAdmin).");
         }
 
         public void Start()
@@ -184,7 +185,7 @@ namespace Jade.Server
         {
             Stream activeStream = client.GetStream();
             bool isTlsEncrypted = false;
-            string boundIdentity = string.Empty;
+            JadeDirectoryEntry? boundUser = null;
 
             try
             {
@@ -256,7 +257,7 @@ namespace Jade.Server
                         }
                     }
 
-                    List<byte[]> responses = ProcessLdapOperation(messageId, opTag, opReader, isTlsEncrypted, ref boundIdentity);
+                    List<byte[]> responses = ProcessLdapOperation(messageId, opTag, opReader, isTlsEncrypted, ref boundUser);
                     foreach (byte[] resp in responses)
                     {
                         await activeStream.WriteAsync(resp, ct).ConfigureAwait(false);
@@ -291,24 +292,24 @@ namespace Jade.Server
             byte opTag,
             BerReader opReader,
             bool isTlsEncrypted,
-            ref string boundIdentity)
+            ref JadeDirectoryEntry? boundUser)
         {
             switch (opTag)
             {
                 case BerTag.BindRequest:
-                    return HandleBindRequest(messageId, opReader, out boundIdentity);
+                    return HandleBindRequest(messageId, opReader, out boundUser);
 
                 case BerTag.SearchRequest:
                     return HandleSearchRequest(messageId, opReader);
 
                 case BerTag.AddRequest:
-                    return HandleAddRequest(messageId, opReader, isTlsEncrypted);
+                    return HandleAddRequest(messageId, opReader, isTlsEncrypted, boundUser);
 
                 case BerTag.ModifyRequest:
-                    return HandleModifyRequest(messageId, opReader, isTlsEncrypted);
+                    return HandleModifyRequest(messageId, opReader, isTlsEncrypted, boundUser);
 
                 case BerTag.DelRequest:
-                    return HandleDeleteRequest(messageId, opReader);
+                    return HandleDeleteRequest(messageId, opReader, boundUser);
 
                 default:
                     return new List<byte[]>
@@ -319,11 +320,11 @@ namespace Jade.Server
             }
         }
 
-        private List<byte[]> HandleBindRequest(int messageId, BerReader opReader, out string boundIdentity)
+        private List<byte[]> HandleBindRequest(int messageId, BerReader opReader, out JadeDirectoryEntry? boundUser)
         {
             int version = opReader.ReadInteger();
             string bindDn = opReader.ReadString();
-            boundIdentity = string.Empty;
+            boundUser = null;
 
             byte authChoiceTag = opReader.PeekTag();
             string password = string.Empty;
@@ -341,10 +342,11 @@ namespace Jade.Server
             var authResult = _db.Authenticate(bindDn, password);
             if (authResult.IsAuthenticated)
             {
-                boundIdentity = bindDn;
+                boundUser = authResult.Entry;
             }
 
-            Log($"LDAP BindRequest [v{version}] DN='{bindDn}' -> Codigo={authResult.LdapResultCode}");
+            string roleInfo = boundUser != null ? $" [Nivel={boundUser.AccessLevel}]" : string.Empty;
+            Log($"LDAP BindRequest [v{version}] DN='{bindDn}' -> Codigo={authResult.LdapResultCode}{roleInfo}");
 
             byte[] response = BerWriter.BuildLdapMessage(messageId, w =>
             {
@@ -481,6 +483,10 @@ namespace Jade.Server
                         WriteAttribute(attrs, "userPrincipalName", entryObj.UserPrincipalName);
                         WriteAttribute(attrs, "userAccountControl", ((uint)entryObj.UserAccountControl).ToString(CultureInfo.InvariantCulture));
                         WriteAttribute(attrs, "dNT", entryObj.Dnt.ToString(CultureInfo.InvariantCulture));
+                        WriteAttribute(attrs, "accessLevel", entryObj.AccessLevel.ToString());
+                        WriteAttribute(attrs, "adminCount", entryObj.AdminCount.ToString(CultureInfo.InvariantCulture));
+                        WriteAttribute(attrs, "primaryGroupID", entryObj.PrimaryGroupRid.ToString(CultureInfo.InvariantCulture));
+                        WriteAttribute(attrs, "memberOf", entryObj.GetGroupDistinguishedName(_options.DomainDn));
                         WriteBinaryAttribute(attrs, "objectGUID", entryObj.ObjectGuid.ToByteArray());
                         if (entryObj.ObjectSid != null && entryObj.ObjectSid.Length > 0)
                         {
@@ -519,7 +525,21 @@ namespace Jade.Server
             });
         }
 
-        private List<byte[]> HandleAddRequest(int messageId, BerReader opReader, bool isTlsEncrypted)
+        private static JadeAccessLevel ParseAccessLevel(string raw)
+        {
+            if (Enum.TryParse<JadeAccessLevel>(raw, ignoreCase: true, out var parsedEnum) &&
+                Enum.IsDefined(typeof(JadeAccessLevel), parsedEnum))
+            {
+                return parsedEnum;
+            }
+            if (uint.TryParse(raw, out uint val) && val <= 3)
+            {
+                return (JadeAccessLevel)val;
+            }
+            return JadeAccessLevel.DomainUser;
+        }
+
+        private List<byte[]> HandleAddRequest(int messageId, BerReader opReader, bool isTlsEncrypted, JadeDirectoryEntry? boundUser)
         {
             string entryDn = opReader.ReadString();
             var attrsSeq = opReader.ReadConstructed(BerTag.Sequence);
@@ -527,6 +547,7 @@ namespace Jade.Server
             string sam = JadeDatabase.ExtractSamAccountName(entryDn);
             string upn = string.Empty;
             uint uac = (uint)UserAccountControl.NormalAccount;
+            JadeAccessLevel targetAccessLevel = JadeAccessLevel.DomainUser;
             byte[]? rawUnicodePwd = null;
 
             while (attrsSeq.HasData)
@@ -553,6 +574,10 @@ namespace Jade.Server
                         uac = parsedUac;
                     }
                 }
+                else if (attrType.Equals("accessLevel", StringComparison.OrdinalIgnoreCase))
+                {
+                    targetAccessLevel = ParseAccessLevel(valsSet.ReadString());
+                }
                 else if (attrType.Equals("unicodePwd", StringComparison.OrdinalIgnoreCase))
                 {
                     rawUnicodePwd = valsSet.ReadOctetString();
@@ -573,6 +598,40 @@ namespace Jade.Server
                 };
             }
 
+            /* Validacao de Controle de Acesso Baseado em Papeis (RBAC) e AdminSDHolder */
+            if (boundUser != null)
+            {
+                if (boundUser.AccessLevel == JadeAccessLevel.DomainUser ||
+                    boundUser.AccessLevel == JadeAccessLevel.SecurityAuditor)
+                {
+                    Log($"LDAP AddRequest NEGADO (RBAC): Usuario '{boundUser.SamAccountName}' ({boundUser.AccessLevel}) tentou criar '{sam}'.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.AddResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                entryDn,
+                                $"00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), role '{boundUser.AccessLevel}' cannot provision directory objects"))
+                    };
+                }
+
+                if (boundUser.AccessLevel == JadeAccessLevel.AccountOperator &&
+                    targetAccessLevel == JadeAccessLevel.DomainAdmin)
+                {
+                    Log($"LDAP AddRequest NEGADO (AdminSDHolder): AccountOperator '{boundUser.SamAccountName}' tentou provisionar conta DomainAdmin '{sam}'.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.AddResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                entryDn,
+                                "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), AdminSDHolder protection blocks AccountOperator from creating DomainAdmin"))
+                    };
+                }
+            }
+
             try
             {
                 var newEntry = new JadeDirectoryEntry
@@ -582,6 +641,7 @@ namespace Jade.Server
                     SamAccountName = sam,
                     UserPrincipalName = string.IsNullOrEmpty(upn) ? $"{sam}@jade.local" : upn,
                     UserAccountControl = (UserAccountControl)uac,
+                    AccessLevel = targetAccessLevel,
                     ObjectGuid = Guid.NewGuid()
                 };
 
@@ -592,7 +652,7 @@ namespace Jade.Server
                     _db.SetPasswordFromLdapBytes(dnt, rawUnicodePwd);
                 }
 
-                Log($"LDAP AddRequest DN='{entryDn}' (sAMAccountName='{sam}') -> Criado com DNT={dnt}");
+                Log($"LDAP AddRequest DN='{entryDn}' (sAMAccountName='{sam}', Nivel={targetAccessLevel}) -> Criado com DNT={dnt}");
 
                 return new List<byte[]>
                 {
@@ -635,7 +695,7 @@ namespace Jade.Server
             }
         }
 
-        private List<byte[]> HandleModifyRequest(int messageId, BerReader opReader, bool isTlsEncrypted)
+        private List<byte[]> HandleModifyRequest(int messageId, BerReader opReader, bool isTlsEncrypted, JadeDirectoryEntry? boundUser)
         {
             string objectDn = opReader.ReadString();
             string sam = JadeDatabase.ExtractSamAccountName(objectDn);
@@ -648,6 +708,53 @@ namespace Jade.Server
                     BerWriter.BuildLdapMessage(messageId, w =>
                         w.WriteLdapResult(BerTag.ModifyResponse, LdapResultCode.NoSuchObject, objectDn, $"Objeto '{objectDn}' nao localizado."))
                 };
+            }
+
+            /* Validacao previa RBAC e AdminSDHolder sobre o objeto alvo */
+            if (boundUser != null)
+            {
+                if (boundUser.AccessLevel == JadeAccessLevel.SecurityAuditor)
+                {
+                    Log($"LDAP ModifyRequest NEGADO (RBAC): SecurityAuditor '{boundUser.SamAccountName}' possui acesso estritamente de leitura.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.ModifyResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                objectDn,
+                                "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), SecurityAuditor role is read-only"))
+                    };
+                }
+
+                if (boundUser.AccessLevel == JadeAccessLevel.DomainUser && boundUser.Dnt != existing.Dnt)
+                {
+                    Log($"LDAP ModifyRequest NEGADO (RBAC): DomainUser '{boundUser.SamAccountName}' tentou modificar outra conta ('{existing.SamAccountName}').");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.ModifyResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                objectDn,
+                                "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), DomainUser can only modify own password"))
+                    };
+                }
+
+                if (boundUser.AccessLevel == JadeAccessLevel.AccountOperator &&
+                    existing.AccessLevel == JadeAccessLevel.DomainAdmin)
+                {
+                    Log($"LDAP ModifyRequest NEGADO (AdminSDHolder): AccountOperator '{boundUser.SamAccountName}' tentou alterar conta protegida DomainAdmin '{existing.SamAccountName}'.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.ModifyResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                objectDn,
+                                "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), AdminSDHolder protection blocks modification of DomainAdmin"))
+                    };
+                }
             }
 
             var changesSeq = opReader.ReadConstructed(BerTag.Sequence);
@@ -663,12 +770,50 @@ namespace Jade.Server
 
                 if (attrName.Equals("userAccountControl", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (boundUser != null && boundUser.AccessLevel == JadeAccessLevel.DomainUser)
+                    {
+                        return new List<byte[]>
+                        {
+                            BerWriter.BuildLdapMessage(messageId, w =>
+                                w.WriteLdapResult(
+                                    BerTag.ModifyResponse,
+                                    LdapResultCode.InsufficientAccessRights,
+                                    objectDn,
+                                    "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), DomainUser cannot modify userAccountControl"))
+                        };
+                    }
+
                     string uacVal = valsSet.ReadString();
                     if (uint.TryParse(uacVal, out uint newUac))
                     {
                         _db.ModifyUserAccountControl(existing.Dnt, (UserAccountControl)newUac);
                         Log($"LDAP ModifyRequest DN='{objectDn}' -> userAccountControl atualizado para {newUac}");
                     }
+                }
+                else if (attrName.Equals("accessLevel", StringComparison.OrdinalIgnoreCase))
+                {
+                    JadeAccessLevel newLevel = ParseAccessLevel(valsSet.ReadString());
+
+                    if (boundUser != null && boundUser.AccessLevel != JadeAccessLevel.DomainAdmin)
+                    {
+                        if (boundUser.AccessLevel == JadeAccessLevel.DomainUser ||
+                            newLevel == JadeAccessLevel.DomainAdmin)
+                        {
+                            Log($"LDAP ModifyRequest NEGADO (AdminSDHolder): '{boundUser.SamAccountName}' ({boundUser.AccessLevel}) tentou elevar '{existing.SamAccountName}' para {newLevel}.");
+                            return new List<byte[]>
+                            {
+                                BerWriter.BuildLdapMessage(messageId, w =>
+                                    w.WriteLdapResult(
+                                        BerTag.ModifyResponse,
+                                        LdapResultCode.InsufficientAccessRights,
+                                        objectDn,
+                                        "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), AdminSDHolder protection blocks privilege escalation to DomainAdmin"))
+                            };
+                        }
+                    }
+
+                    _db.ModifyAccessLevel(existing.Dnt, newLevel);
+                    Log($"LDAP ModifyRequest DN='{objectDn}' -> accessLevel atualizado para {newLevel}");
                 }
                 else if (attrName.Equals("unicodePwd", StringComparison.OrdinalIgnoreCase))
                 {
@@ -698,7 +843,7 @@ namespace Jade.Server
             };
         }
 
-        private List<byte[]> HandleDeleteRequest(int messageId, BerReader opReader)
+        private List<byte[]> HandleDeleteRequest(int messageId, BerReader opReader, JadeDirectoryEntry? boundUser)
         {
             byte[] dnBytes = opReader.ReadRemainingBytes();
             string targetDn = Encoding.UTF8.GetString(dnBytes);
@@ -712,6 +857,39 @@ namespace Jade.Server
                     BerWriter.BuildLdapMessage(messageId, w =>
                         w.WriteLdapResult(BerTag.DelResponse, LdapResultCode.NoSuchObject, targetDn, $"Objeto '{targetDn}' nao localizado."))
                 };
+            }
+
+            if (boundUser != null)
+            {
+                if (boundUser.AccessLevel == JadeAccessLevel.DomainUser ||
+                    boundUser.AccessLevel == JadeAccessLevel.SecurityAuditor)
+                {
+                    Log($"LDAP DelRequest NEGADO (RBAC): '{boundUser.SamAccountName}' ({boundUser.AccessLevel}) tentou excluir '{existing.SamAccountName}'.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.DelResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                targetDn,
+                                $"00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), role '{boundUser.AccessLevel}' cannot delete directory objects"))
+                    };
+                }
+
+                if (boundUser.AccessLevel == JadeAccessLevel.AccountOperator &&
+                    existing.AccessLevel == JadeAccessLevel.DomainAdmin)
+                {
+                    Log($"LDAP DelRequest NEGADO (AdminSDHolder): AccountOperator '{boundUser.SamAccountName}' tentou excluir DomainAdmin '{existing.SamAccountName}'.");
+                    return new List<byte[]>
+                    {
+                        BerWriter.BuildLdapMessage(messageId, w =>
+                            w.WriteLdapResult(
+                                BerTag.DelResponse,
+                                LdapResultCode.InsufficientAccessRights,
+                                targetDn,
+                                "00002098: SecErr: DSID-03150E49, problem 4003 (INSUFF_ACCESS_RIGHTS), AdminSDHolder protection blocks deletion of DomainAdmin"))
+                    };
+                }
             }
 
             _db.DeleteObject(existing.Dnt, tombstone: true);

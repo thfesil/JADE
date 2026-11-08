@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
+using Jade.Core;
 using Jade.Server;
 using Jade.Server.Ldap;
 using Xunit;
@@ -134,6 +135,9 @@ namespace Jade.Tests
             var reenabledBind = await client.BindAsync("analista.dc", "NovaSenha@2026!");
             Assert.True(reenabledBind.IsSuccess);
 
+            /* Reautentica como Administrator para operacoes administrativas de dominio */
+            await client.BindAsync("CN=Administrator,CN=Users,DC=jade,DC=local", "Admin@Jade2026!");
+
             /* 8. Simulacao de esgotamento de RIDs (Win32 8209) */
             _server.SetRidExhaustionSimulation(true);
             var ridFailResp = await client.AddUserAsync(
@@ -151,6 +155,77 @@ namespace Jade.Tests
 
             var afterDeleteSearch = await client.SearchBySamAccountNameAsync("DC=jade,DC=local", "analista.dc");
             Assert.Null(afterDeleteSearch);
+        }
+
+        [Fact]
+        public async Task RbacAndAdminSdHolder_ShouldEnforceFourCorporateAccessLevels()
+        {
+            await using var client = new JadeLdapClient();
+            await client.ConnectAsync("127.0.0.1", _server.ActiveLdapsPort, useImplicitLdaps: true);
+
+            /* 1. Administrator (DomainAdmin) provisiona contas dos 3 demais niveis */
+            await client.BindAsync("CN=Administrator,CN=Users,DC=jade,DC=local", "Admin@Jade2026!");
+
+            await client.AddUserAsync(
+                "CN=user.comum,CN=Users,DC=jade,DC=local",
+                "user.comum",
+                "user.comum@jade.local",
+                "SenhaUser#2026",
+                accessLevel: JadeAccessLevel.DomainUser);
+
+            await client.AddUserAsync(
+                "CN=auditor.sec,CN=Users,DC=jade,DC=local",
+                "auditor.sec",
+                "auditor.sec@jade.local",
+                "SenhaAudit#2026",
+                accessLevel: JadeAccessLevel.SecurityAuditor);
+
+            await client.AddUserAsync(
+                "CN=operador.conta,CN=Users,DC=jade,DC=local",
+                "operador.conta",
+                "operador.conta@jade.local",
+                "SenhaOper#2026",
+                accessLevel: JadeAccessLevel.AccountOperator);
+
+            /* 2. SecurityAuditor: pode consultar, mas nao pode alterar nem a propria senha */
+            var auditBind = await client.BindAsync("auditor.sec@jade.local", "SenhaAudit#2026");
+            Assert.True(auditBind.IsSuccess);
+
+            var auditSearch = await client.SearchBySamAccountNameAsync("DC=jade,DC=local", "user.comum");
+            Assert.NotNull(auditSearch);
+            Assert.Equal("DomainUser", auditSearch.GetFirstValue("accessLevel"));
+
+            var auditSelfPwd = await client.ModifyPasswordAsync("CN=auditor.sec,CN=Users,DC=jade,DC=local", "Tentativa#2026");
+            Assert.Equal(LdapResultCode.InsufficientAccessRights, auditSelfPwd.ResultCode);
+
+            /* 3. DomainUser: pode alterar a propria senha, mas nao pode criar contas nem alterar outros usuarios */
+            var userBind = await client.BindAsync("user.comum@jade.local", "SenhaUser#2026");
+            Assert.True(userBind.IsSuccess);
+
+            var userSelfPwd = await client.ModifyPasswordAsync("CN=user.comum,CN=Users,DC=jade,DC=local", "NovaSenhaUser#2026");
+            Assert.True(userSelfPwd.IsSuccess);
+
+            var userCreateAttempt = await client.AddUserAsync(
+                "CN=intruso,CN=Users,DC=jade,DC=local",
+                "intruso",
+                "intruso@jade.local",
+                "Senha#123");
+            Assert.Equal(LdapResultCode.InsufficientAccessRights, userCreateAttempt.ResultCode);
+
+            /* 4. AccountOperator: pode gerenciar DomainUser, mas e bloqueado pelo AdminSDHolder ao tocar em DomainAdmin */
+            var operBind = await client.BindAsync("operador.conta@jade.local", "SenhaOper#2026");
+            Assert.True(operBind.IsSuccess);
+
+            var operDisableUser = await client.ModifyUserAccountControlAsync("CN=user.comum,CN=Users,DC=jade,DC=local", 514);
+            Assert.True(operDisableUser.IsSuccess);
+
+            var operDisableAdmin = await client.ModifyUserAccountControlAsync("CN=Administrator,CN=Users,DC=jade,DC=local", 514);
+            Assert.Equal(LdapResultCode.InsufficientAccessRights, operDisableAdmin.ResultCode);
+            Assert.Contains("AdminSDHolder", operDisableAdmin.DiagnosticMessage);
+
+            var operEscalateAttempt = await client.ModifyAccessLevelAsync("CN=user.comum,CN=Users,DC=jade,DC=local", JadeAccessLevel.DomainAdmin);
+            Assert.Equal(LdapResultCode.InsufficientAccessRights, operEscalateAttempt.ResultCode);
+            Assert.Contains("AdminSDHolder", operEscalateAttempt.DiagnosticMessage);
         }
     }
 }

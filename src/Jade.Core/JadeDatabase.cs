@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Jade.Native;
@@ -133,6 +134,54 @@ namespace Jade.Core
                 {
                     throw new JadeException(rc, $"Falha ao atualizar userAccountControl do DNT '{dnt}' para {(uint)uac}");
                 }
+            }
+        }
+
+        public void ModifyAccessLevel(uint dnt, JadeAccessLevel newLevel)
+        {
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                int rc = NativeMethods.ModifyNcdnt(_handle, dnt, (uint)newLevel);
+                if (rc != JadeConstants.Ok)
+                {
+                    throw new JadeException(rc, $"Falha ao atualizar o nivel de acesso (RBAC) do DNT '{dnt}' para {newLevel}");
+                }
+            }
+        }
+
+        public List<JadeDirectoryEntry> ListObjects(bool includeDeleted = false, JadeObjectClass? filterClass = null)
+        {
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                uint total = CountObjects();
+                uint maxDntToScan = total + 64;
+                var results = new List<JadeDirectoryEntry>();
+                uint foundCount = 0;
+
+                for (uint dnt = 1; dnt <= maxDntToScan && foundCount < total; dnt++)
+                {
+                    int rc = NativeMethods.FindByDnt(_handle, dnt, out JadeNativeObject native);
+                    if (rc == JadeConstants.Ok)
+                    {
+                        foundCount++;
+                        var entry = JadeDirectoryEntry.FromNative(native);
+                        if (!includeDeleted && entry.IsDeleted)
+                        {
+                            continue;
+                        }
+                        if (filterClass.HasValue && entry.ObjectClass != filterClass.Value)
+                        {
+                            continue;
+                        }
+                        results.Add(entry);
+                    }
+                }
+
+                return results;
             }
         }
 
