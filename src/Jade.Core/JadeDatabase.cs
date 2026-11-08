@@ -209,7 +209,7 @@ namespace Jade.Core
                 EnsureNotDisposed();
 
                 uint total = CountObjects();
-                uint maxDntToScan = total + 64;
+                uint maxDntToScan = Math.Max(total * 50 + 4096, 200000);
                 var results = new List<JadeDirectoryEntry>();
                 uint foundCount = 0;
 
