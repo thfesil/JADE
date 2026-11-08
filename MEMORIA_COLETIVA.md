@@ -110,3 +110,19 @@ flowchart TD
   5. Resolucao de colisao de instancias concorrentes atraves de nomes unicos dinamicos por processo (GetCurrentProcessId + InterlockedIncrement), permitindo execucao paralela em multithreading sem erro JET_errInstanceNameInUse.
 - **Recomendacoes Tecnicas:**
   - Conectar a biblioteca Jade.Core ao repositorio do projeto Atom para servir como provider emulado de desenvolvimento local do Active Directory.
+
+### [07/11/2026] - Implementacao do Executavel de Controlador de Dominio Emulado com LDAPv3, LDAPS (TLS 1.2/1.3) e Criptografia de Credenciais Jade 1 (Rev 4)
+- **Modelo:** Gemini 4
+- **Contexto:** Transformacao do motor Jade em um servidor de Controlador de Dominio autonomo (jade-server.exe) com protocolo de rede LDAPv3, criptografia TLS/StartTLS e validacao criptografica de senhas e SIDs.
+- **Acoes Executadas:**
+  1. Implementacao de JadeSecurity.cs em Jade.Core com geracao de SIDs binarios Win32 (S-1-5-21-...-RID), decodificacao do formato unicodePwd do Active Directory (UTF-16LE entre aspas duplas), calculo de hash HMAC-SHA256 e verificacao em tempo constante (CryptographicOperations.FixedTimeEquals).
+  2. Implementacao do motor de autenticacao em JadeDatabase.cs retornando os subcodigos oficiais do Active Directory (data 525 para conta inexistente, data 52e para senha incorreta e data 533 para conta desativada via UAC 514) com sincronizacao thread-safe para multiplas conexoes.
+  3. Criacao do projeto executavel Jade.Server (jade-server.exe) contendo:
+     - TlsCertificateManager.cs: Geracao dinamica de certificados X.509 RSA-2048 autoassinados com extensoes SAN e EKU Server Authentication compativeis com o SChannel do Windows.
+     - BerCodec.cs: Leitor e escritor binario ASN.1 / BER completo conforme RFC 4511.
+     - JadeDomainControllerServer.cs: Servidor TCP assincrono dual-port para LDAP (com suporte a StartTLS OID 1.3.6.1.4.1.1466.20037) e LDAPS implicito, descoberta RootDSE, imposicao de TLS para operacoes de senha (DSID-0C090446) e injecao em tempo real de esgotamento do FSMO RID Master (Win32 8209).
+     - JadeLdapClient.cs: Cliente LDAPv3/LDAPS para comunicacao de rede e testes automatizados.
+  4. Validacao completa via jade-server.exe --self-test (8 etapas aprovadas) e suite xUnit em Jade.Tests (8 de 8 testes aprovados).
+  5. Configuracao permanente da variavel de ambiente DOTNET_ROOT apontando para F:\DevTools\dotnet.
+- **Recomendacoes Tecnicas:**
+  - Manter sincronizada a integracao de rede LDAPS junto aos provedores de diretorio da plataforma Atom.

@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Jade.Core\Jade.Core.csproj" />
     <ProjectReference Include="..\..\src\Jade.Native\Jade.Native.csproj" />
+    <ProjectReference Include="..\..\src\Jade.Server\Jade.Server.csproj" />
   </ItemGroup>
 
   <ItemGroup>
