@@ -4,15 +4,20 @@ Jade e um emulador autonomo, leve e de alta fidelidade de Controlador de Dominio
 
 ---
 
-## Novidades Recentes (Jade 1 - Rev 5)
+## Novidades Recentes (Jade 1 - Rev 6)
 
-* Implementacao de **Console Administrativo Interativo (`JADE-DC>`)** diretamente no executavel `jade-server.exe`, permitindo gerenciar o Controlador de Dominio em tempo real via terminal (`user create`, `user list`, `user show`, `user enable`, `user disable`, `user passwd`, `user role`, `user auth`, `user delete`, `rid exhaust on|off`, `status`, `help` e `quit`).
-* Arquitetura de **Controle de Acesso Baseado em Papeis (RBAC)** com **4 Niveis de Acesso Corporativos** persistidos nativamente no `ntds.dit` e aplicados sobre todas as sessoes LDAP/LDAPS:
-  * **DomainUser (`0` - `CN=Domain Users`, RID `513`)**: Autentica (`BindRequest`), realiza buscas (`SearchRequest`) e altera exclusivamente a propria senha (`unicodePwd`). Bloqueado ao tentar criar, desativar ou excluir contas.
-  * **SecurityAuditor (`1` - `CN=Guests`, RID `546`)**: Acesso estritamente de leitura (`BindRequest` e `SearchRequest`) voltado para servicos de auditoria e SIEM. Qualquer operacao de escrita (`Add`, `Modify`, `Delete`) e rejeitada com codigo LDAP `50` (`LDAP_INSUFFICIENT_ACCESS_RIGHTS`).
-  * **AccountOperator (`2` - `CN=Account Operators`, RID `548`)**: Permissao delegada para criar, ativar, desativar, redefinir senhas e excluir contas de `DomainUser`, `SecurityAuditor` e `AccountOperator`, porém bloqueado pelo **AdminSDHolder** ao tentar criar ou modificar contas `DomainAdmin`.
-  * **DomainAdmin (`3` - `CN=Domain Admins`, RID `512`, `adminCount=1`)**: Controle administrativo irrestrito sobre o Controlador de Dominio e protegido contra escalacao de privilegios por **AdminSDHolder** (`DSID-03150E49`).
-* Suite de testes xUnit ampliada com 100% de aprovacao (9 de 9 testes aprovados) e auto-teste expandido (`jade-server.exe --self-test` com 9 etapas).
+* Implementacao de **Grupos de Seguranca do Active Directory (`objectClass: group`)** e comandos da familia `group` no Console Administrativo Interativo (`JADE-DC>`):
+  * `group create <nome>`: Cria grupos de seguranca com alocacao dinamica de RID e SID no NTDS.DIT (`S-1-5-21-...-RID`), `groupType = -2147483646` (Global Security Group).
+  * `group list`: Lista todos os grupos de seguranca ativos e contagem de membros associados.
+  * `group show <nome>`: Exibe atributos detalhados do grupo, GUID, SID e relacao de membros.
+  * `group add-member <grupo> <usuario>`: Associa um usuario corporativo como membro do grupo.
+  * `group remove-member <grupo> <usuario>`: Remove a associacao de um usuario ao grupo.
+  * `group delete <nome>`: Exclui o grupo e move o objeto para o container Tombstone (`isDeleted = 1`).
+* Suporte completo no servidor **LDAP/LDAPS** para criacao, consulta e manipulacao de grupos e associacoes:
+  * Atributo multi-valor `member` nos objetos de grupo contendo os Distinguished Names (DNs) dos membros.
+  * Atributo multi-valor `memberOf` nos objetos de usuario contendo os DNs dos grupos aos quais o usuario pertence.
+  * Provisionamento automatico dos grupos corporativos padrao do Active Directory: `Domain Admins` (RID 512), `Domain Users` (RID 513), `Account Operators` (RID 548) e `Security Auditors` (RID 546).
+* Suite de testes xUnit expandida cobrindo persistencia de grupos, membros e resolucao de protocolo LDAPv3/LDAPS (10 de 10 testes aprovados).
 
 ---
 

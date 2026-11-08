@@ -127,18 +127,21 @@ flowchart TD
 - **Recomendacoes Tecnicas:**
   - Manter sincronizada a integracao de rede LDAPS junto aos provedores de diretorio da plataforma Atom.
 
-### [07/11/2026] - Implementacao do Console Administrativo Interativo e 4 Niveis de Acesso RBAC com Protecao AdminSDHolder Jade 1 (Rev 5)
+### [07/11/2026] - Implementacao de Grupos de Seguranca, Membros e Suporte LDAP/CLI Jade 1 (Rev 6)
 - **Modelo:** Gemini 4
-- **Contexto:** Adicao de console administrativo interativo (CLI Shell) no executavel jade-server.exe e controle de acesso baseado em papeis (RBAC) com 4 niveis hierarquicos e protecao AdminSDHolder no servidor LDAP/LDAPS.
+- **Contexto:** Adicao do suporte completo a grupos de seguranca (objectClass: group) no NTDS.DIT, comandos administrativos da familia group no console interativo (JADE-DC>) e associacao bidirecional de membros (member e memberOf) via protocolo LDAPv3/LDAPS.
 - **Acoes Executadas:**
-  1. Expansao do motor nativo C (native/include/jade.h e native/src/jade_core.c) com a funcao exportada jade_modify_ncdnt para atualizacao transacional de nivel de acesso no NTDS.DIT.
-  2. Criacao do enumerador JadeAccessLevel em Jade.Core com 4 niveis corporativos:
-     - DomainUser (0 - CN=Domain Users, RID 513): Autentica, consulta e altera apenas a propria senha.
-     - SecurityAuditor (1 - CN=Guests, RID 546): Acesso estrito somente leitura para auditoria.
-     - AccountOperator (2 - CN=Account Operators, RID 548): Gerencia contas comuns e operadores, bloqueado em contas DomainAdmin.
-     - DomainAdmin (3 - CN=Domain Admins, RID 512, adminCount=1): Controle total e protegido pelo mecanismo AdminSDHolder.
-  3. Implementacao da imposicao de RBAC e AdminSDHolder em JadeDomainControllerServer.cs (retornando codigo LDAP 50 LDAP_INSUFFICIENT_ACCESS_RIGHTS / DSID-03150E49) e exposicao dos atributos accessLevel, adminCount, primaryGroupID e memberOf nas buscas LDAP.
-  4. Construcao do Console Administrativo Interativo (JADE-DC>) em Program.cs suportando os comandos user create, user list, user show, user enable, user disable, user passwd, user role, user auth, user delete, rid exhaust on|off, status, help e quit.
-  5. Validacao automatizada via xUnit (9 de 9 testes aprovados) e jade-server.exe --self-test (9 etapas aprovadas).
+  1. Extensao do motor JadeDatabase em Jade.Core para alocacao automatica de RIDs e SIDs de seguranca (S-1-5-21-...-RID) para objetos de classe Group (JADE_CLASS_GROUP 196622).
+  2. Implementacao de persistencia transacional e crash-resilient de associacoes de grupo em jade_group_members.json, expondo os metodos CreateGroup, ListGroups, AddMemberToGroup, RemoveMemberFromGroup, GetGroupMembers e GetUserGroups.
+  3. Atualizacao de JadeDomainControllerServer para provisionamento automatico dos grupos padrao do Active Directory: Domain Admins (RID 512), Domain Users (RID 513), Account Operators (RID 548) e Security Auditors (RID 546).
+  4. Suporte completo no servidor LDAP para os atributos member nos grupos e memberOf nos usuarios, alem de tratamento de AddRequest e ModifyRequest para adicao/remocao dinamica de membros via rede LDAPv3/LDAPS.
+  5. Implementacao dos comandos interativos da familia group no console JADE-DC> em Program.cs:
+     - group create <nome>: Cria grupos no NTDS.DIT com SID e RID alocado.
+     - group list: Lista todos os grupos de seguranca ativos e contagem de membros.
+     - group show <nome>: Exibe atributos, GUID, SID e relacao de membros do grupo.
+     - group add-member <grupo> <usuario>: Associa um usuario ao grupo.
+     - group remove-member <grupo> <usuario>: Desassocia um usuario do grupo.
+     - group delete <nome>: Exclui o grupo e move para Tombstone (isDeleted=1).
+  6. Suite automatizada de testes xUnit expandida em JadeDomainControllerServerTests.cs com 100% de aprovacao (10 de 10 testes aprovados) e teste interativo ponta a ponta validado.
 - **Recomendacoes Tecnicas:**
-  - Utilizar os perfis AccountOperator e DomainAdmin para testes de segregacao de funcoes (SoD) na plataforma Atom.
+  - Os grupos corporativos como G_CAOS_ADMIN e Domain Admins ja estao totalmente integrados e disponiveis para autenticacao e operacao de ferramentas IAM e clientes LDAP externos como o CAOS.

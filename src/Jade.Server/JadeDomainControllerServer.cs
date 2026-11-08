@@ -64,6 +64,46 @@ namespace Jade.Server
             _serverCertificate = TlsCertificateManager.GetOrCreateServerCertificate(_options.DataDirectory, _options.DnsHostName);
 
             SeedDefaultDirectoryHierarchy();
+            EnsureDefaultGroups();
+        }
+
+        private void EnsureDefaultGroups()
+        {
+            var defaultGroups = new[]
+            {
+                ("Domain Admins", 512u, JadeAccessLevel.DomainAdmin),
+                ("Domain Users", 513u, JadeAccessLevel.DomainUser),
+                ("Account Operators", 548u, JadeAccessLevel.AccountOperator),
+                ("Security Auditors", 546u, JadeAccessLevel.SecurityAuditor)
+            };
+
+            foreach (var (name, rid, level) in defaultGroups)
+            {
+                var existing = _db.FindBySamAccountName(name);
+                if (existing == null)
+                {
+                    var grp = new JadeDirectoryEntry
+                    {
+                        Pdnt = 2, /* CN=Users */
+                        ObjectClass = JadeObjectClass.Group,
+                        SamAccountName = name,
+                        UserPrincipalName = string.Empty,
+                        UserAccountControl = 0,
+                        AccessLevel = level,
+                        ObjectSid = JadeSecurity.BuildBinarySid(rid),
+                        ObjectGuid = Guid.NewGuid()
+                    };
+                    _db.AddObject(grp);
+                    Log($"Grupo padrao provisionado no NTDS.DIT: '{name}' (RID={rid}, Nivel={level}).");
+                }
+            }
+
+            var admin = _db.FindBySamAccountName("Administrator");
+            if (admin != null)
+            {
+                _db.AddMemberToGroup("Domain Admins", "Administrator");
+                _db.AddMemberToGroup("Domain Users", "Administrator");
+            }
         }
 
         private void SeedDefaultDirectoryHierarchy()
@@ -369,8 +409,8 @@ namespace Jade.Server
             int timeLimit = opReader.ReadInteger();
             bool typesOnly = opReader.ReadBoolean();
 
-            /* Extrai filtro de busca */
-            string? samFilter = TryExtractSamAccountNameFromFilter(opReader);
+            /* Extrai filtro de busca (sAMAccountName e/ou objectClass) */
+            var (samFilter, objClassFilter) = ExtractFilterCriteria(opReader);
 
             var packets = new List<byte[]>();
 
@@ -398,6 +438,32 @@ namespace Jade.Server
                     packets.Add(BuildDirectoryEntryPacket(messageId, found));
                 }
             }
+            else
+            {
+                /* Caso 3: Busca geral / enumeracao de objetos (Subtree / OneLevel / Base) */
+                JadeObjectClass? filterClass = null;
+                if (!string.IsNullOrEmpty(objClassFilter))
+                {
+                    if (objClassFilter.Equals("group", StringComparison.OrdinalIgnoreCase))
+                    {
+                        filterClass = JadeObjectClass.Group;
+                    }
+                    else if (objClassFilter.Equals("user", StringComparison.OrdinalIgnoreCase) ||
+                             objClassFilter.Equals("person", StringComparison.OrdinalIgnoreCase))
+                    {
+                        filterClass = JadeObjectClass.User;
+                    }
+                }
+
+                var list = _db.ListObjects(includeDeleted: false, filterClass: filterClass);
+                foreach (var entry in list)
+                {
+                    if (entry.ObjectClass == JadeObjectClass.User || entry.ObjectClass == JadeObjectClass.Group)
+                    {
+                        packets.Add(BuildDirectoryEntryPacket(messageId, entry));
+                    }
+                }
+            }
 
             packets.Add(BerWriter.BuildLdapMessage(messageId, w =>
                 w.WriteLdapResult(BerTag.SearchResultDone, LdapResultCode.Success)));
@@ -405,9 +471,9 @@ namespace Jade.Server
             return packets;
         }
 
-        private static string? TryExtractSamAccountNameFromFilter(BerReader opReader)
+        private static (string? Sam, string? ObjectClass) ExtractFilterCriteria(BerReader opReader)
         {
-            if (!opReader.HasData) return null;
+            if (!opReader.HasData) return (null, null);
 
             byte filterTag = opReader.PeekTag();
 
@@ -421,28 +487,40 @@ namespace Jade.Server
                     attr.Equals("cn", StringComparison.OrdinalIgnoreCase) ||
                     attr.Equals("userPrincipalName", StringComparison.OrdinalIgnoreCase))
                 {
-                    return JadeDatabase.ExtractSamAccountName(val);
+                    return (JadeDatabase.ExtractSamAccountName(val), null);
                 }
-                return null;
+                if (attr.Equals("objectClass", StringComparison.OrdinalIgnoreCase) ||
+                    attr.Equals("objectCategory", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (null, val);
+                }
+                return (null, null);
             }
 
             /* 0xA0 = AND filter (&(...)(...)) */
             if (filterTag == 0xA0)
             {
+                string? sam = null;
+                string? objClass = null;
                 var andReader = opReader.ReadConstructed(0xA0);
                 while (andReader.HasData)
                 {
-                    string? nested = TryExtractSamAccountNameFromFilter(andReader);
-                    if (!string.IsNullOrEmpty(nested))
-                    {
-                        return nested;
-                    }
+                    var (s, c) = ExtractFilterCriteria(andReader);
+                    if (!string.IsNullOrEmpty(s)) sam = s;
+                    if (!string.IsNullOrEmpty(c)) objClass = c;
                 }
-                return null;
+                return (sam, objClass);
+            }
+
+            /* 0x87 = Present filter (attr) e.g. (objectClass=*) */
+            if (filterTag == 0x87)
+            {
+                opReader.SkipElement();
+                return (null, "*");
             }
 
             opReader.SkipElement();
-            return null;
+            return (null, null);
         }
 
         private byte[] BuildRootDseEntryPacket(int messageId)
@@ -480,18 +558,44 @@ namespace Jade.Server
                         WriteAttribute(attrs, "distinguishedName", dn);
                         WriteAttribute(attrs, "cn", entryObj.SamAccountName);
                         WriteAttribute(attrs, "sAMAccountName", entryObj.SamAccountName);
-                        WriteAttribute(attrs, "userPrincipalName", entryObj.UserPrincipalName);
-                        WriteAttribute(attrs, "userAccountControl", ((uint)entryObj.UserAccountControl).ToString(CultureInfo.InvariantCulture));
                         WriteAttribute(attrs, "dNT", entryObj.Dnt.ToString(CultureInfo.InvariantCulture));
-                        WriteAttribute(attrs, "accessLevel", entryObj.AccessLevel.ToString());
-                        WriteAttribute(attrs, "adminCount", entryObj.AdminCount.ToString(CultureInfo.InvariantCulture));
-                        WriteAttribute(attrs, "primaryGroupID", entryObj.PrimaryGroupRid.ToString(CultureInfo.InvariantCulture));
-                        WriteAttribute(attrs, "memberOf", entryObj.GetGroupDistinguishedName(_options.DomainDn));
                         WriteBinaryAttribute(attrs, "objectGUID", entryObj.ObjectGuid.ToByteArray());
                         if (entryObj.ObjectSid != null && entryObj.ObjectSid.Length > 0)
                         {
                             WriteBinaryAttribute(attrs, "objectSid", entryObj.ObjectSid);
                             WriteAttribute(attrs, "objectSidString", JadeSecurity.FormatSidString(entryObj.ObjectSid));
+                        }
+
+                        if (entryObj.ObjectClass == JadeObjectClass.Group)
+                        {
+                            WriteAttribute(attrs, "objectClass", "top", "group");
+                            WriteAttribute(attrs, "sAMAccountType", "268435456"); /* SAM_GROUP_OBJECT */
+                            WriteAttribute(attrs, "groupType", "-2147483646");   /* Global Security Group */
+
+                            var members = _db.GetGroupMembers(entryObj.SamAccountName);
+                            if (members.Count > 0)
+                            {
+                                var memberDns = members.Select(m => $"CN={m},CN=Users,{_options.DomainDn}").ToArray();
+                                WriteAttribute(attrs, "member", memberDns);
+                            }
+                        }
+                        else
+                        {
+                            WriteAttribute(attrs, "objectClass", "top", "person", "organizationalPerson", "user");
+                            WriteAttribute(attrs, "userPrincipalName", entryObj.UserPrincipalName);
+                            WriteAttribute(attrs, "userAccountControl", ((uint)entryObj.UserAccountControl).ToString(CultureInfo.InvariantCulture));
+                            WriteAttribute(attrs, "accessLevel", entryObj.AccessLevel.ToString());
+                            WriteAttribute(attrs, "adminCount", entryObj.AdminCount.ToString(CultureInfo.InvariantCulture));
+                            WriteAttribute(attrs, "primaryGroupID", entryObj.PrimaryGroupRid.ToString(CultureInfo.InvariantCulture));
+
+                            var userGroups = _db.GetUserGroups(entryObj.SamAccountName);
+                            var memberOfDns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            memberOfDns.Add(entryObj.GetGroupDistinguishedName(_options.DomainDn));
+                            foreach (var g in userGroups)
+                            {
+                                memberOfDns.Add($"CN={g},CN=Users,{_options.DomainDn}");
+                            }
+                            WriteAttribute(attrs, "memberOf", memberOfDns.ToArray());
                         }
                     });
                 });
@@ -548,7 +652,9 @@ namespace Jade.Server
             string upn = string.Empty;
             uint uac = (uint)UserAccountControl.NormalAccount;
             JadeAccessLevel targetAccessLevel = JadeAccessLevel.DomainUser;
+            JadeObjectClass targetClass = JadeObjectClass.User;
             byte[]? rawUnicodePwd = null;
+            var initialMembers = new List<string>();
 
             while (attrsSeq.HasData)
             {
@@ -558,7 +664,19 @@ namespace Jade.Server
 
                 if (!valsSet.HasData) continue;
 
-                if (attrType.Equals("sAMAccountName", StringComparison.OrdinalIgnoreCase))
+                if (attrType.Equals("objectClass", StringComparison.OrdinalIgnoreCase) ||
+                    attrType.Equals("objectCategory", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (valsSet.HasData)
+                    {
+                        string oc = valsSet.ReadString();
+                        if (oc.Equals("group", StringComparison.OrdinalIgnoreCase))
+                        {
+                            targetClass = JadeObjectClass.Group;
+                        }
+                    }
+                }
+                else if (attrType.Equals("sAMAccountName", StringComparison.OrdinalIgnoreCase))
                 {
                     sam = valsSet.ReadString();
                 }
@@ -581,6 +699,13 @@ namespace Jade.Server
                 else if (attrType.Equals("unicodePwd", StringComparison.OrdinalIgnoreCase))
                 {
                     rawUnicodePwd = valsSet.ReadOctetString();
+                }
+                else if (attrType.Equals("member", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (valsSet.HasData)
+                    {
+                        initialMembers.Add(valsSet.ReadString());
+                    }
                 }
             }
 
@@ -637,22 +762,46 @@ namespace Jade.Server
                 var newEntry = new JadeDirectoryEntry
                 {
                     Pdnt = 2, /* CN=Users */
-                    ObjectClass = JadeObjectClass.User,
+                    ObjectClass = targetClass,
                     SamAccountName = sam,
-                    UserPrincipalName = string.IsNullOrEmpty(upn) ? $"{sam}@jade.local" : upn,
-                    UserAccountControl = (UserAccountControl)uac,
+                    UserPrincipalName = targetClass == JadeObjectClass.Group ? string.Empty : (string.IsNullOrEmpty(upn) ? $"{sam}@jade.local" : upn),
+                    UserAccountControl = targetClass == JadeObjectClass.Group ? 0 : (UserAccountControl)uac,
                     AccessLevel = targetAccessLevel,
                     ObjectGuid = Guid.NewGuid()
                 };
 
                 uint dnt = _db.AddObject(newEntry);
 
-                if (rawUnicodePwd != null)
+                if (targetClass == JadeObjectClass.User)
                 {
-                    _db.SetPasswordFromLdapBytes(dnt, rawUnicodePwd);
+                    if (rawUnicodePwd != null)
+                    {
+                        _db.SetPasswordFromLdapBytes(dnt, rawUnicodePwd);
+                    }
+
+                    _db.AddMemberToGroup("Domain Users", sam);
+                    if (targetAccessLevel == JadeAccessLevel.DomainAdmin)
+                    {
+                        _db.AddMemberToGroup("Domain Admins", sam);
+                    }
+                    else if (targetAccessLevel == JadeAccessLevel.AccountOperator)
+                    {
+                        _db.AddMemberToGroup("Account Operators", sam);
+                    }
+                    else if (targetAccessLevel == JadeAccessLevel.SecurityAuditor)
+                    {
+                        _db.AddMemberToGroup("Security Auditors", sam);
+                    }
+                }
+                else if (targetClass == JadeObjectClass.Group)
+                {
+                    foreach (var m in initialMembers)
+                    {
+                        _db.AddMemberToGroup(sam, JadeDatabase.ExtractSamAccountName(m));
+                    }
                 }
 
-                Log($"LDAP AddRequest DN='{entryDn}' (sAMAccountName='{sam}', Nivel={targetAccessLevel}) -> Criado com DNT={dnt}");
+                Log($"LDAP AddRequest DN='{entryDn}' (Classe={targetClass}, sAMAccountName='{sam}', Nivel={targetAccessLevel}) -> Criado com DNT={dnt}");
 
                 return new List<byte[]>
                 {
@@ -833,6 +982,52 @@ namespace Jade.Server
                     byte[] pwdBytes = valsSet.ReadOctetString();
                     _db.SetPasswordFromLdapBytes(existing.Dnt, pwdBytes);
                     Log($"LDAP ModifyRequest DN='{objectDn}' -> unicodePwd redefinido sob canal seguro TLS.");
+                }
+                else if (attrName.Equals("member", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (valsSet.HasData)
+                    {
+                        string memberDnOrSam = valsSet.ReadString();
+                        string memberSam = JadeDatabase.ExtractSamAccountName(memberDnOrSam);
+                        if (operation == 0) /* Add */
+                        {
+                            _db.AddMemberToGroup(existing.SamAccountName, memberSam);
+                            Log($"LDAP ModifyRequest: Membro '{memberSam}' associado ao grupo '{existing.SamAccountName}'.");
+                        }
+                        else if (operation == 1) /* Delete */
+                        {
+                            _db.RemoveMemberFromGroup(existing.SamAccountName, memberSam);
+                            Log($"LDAP ModifyRequest: Membro '{memberSam}' removido do grupo '{existing.SamAccountName}'.");
+                        }
+                        else if (operation == 2) /* Replace */
+                        {
+                            var currentMembers = _db.GetGroupMembers(existing.SamAccountName);
+                            foreach (var m in currentMembers)
+                            {
+                                _db.RemoveMemberFromGroup(existing.SamAccountName, m);
+                            }
+                            _db.AddMemberToGroup(existing.SamAccountName, memberSam);
+                            Log($"LDAP ModifyRequest: Lista de membros do grupo '{existing.SamAccountName}' substituida.");
+                        }
+                    }
+                }
+                else if (attrName.Equals("memberOf", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (valsSet.HasData)
+                    {
+                        string groupDnOrSam = valsSet.ReadString();
+                        string groupSam = JadeDatabase.ExtractSamAccountName(groupDnOrSam);
+                        if (operation == 0) /* Add */
+                        {
+                            _db.AddMemberToGroup(groupSam, existing.SamAccountName);
+                            Log($"LDAP ModifyRequest: Usuario '{existing.SamAccountName}' associado ao grupo '{groupSam}'.");
+                        }
+                        else if (operation == 1) /* Delete */
+                        {
+                            _db.RemoveMemberFromGroup(groupSam, existing.SamAccountName);
+                            Log($"LDAP ModifyRequest: Usuario '{existing.SamAccountName}' desassociado do grupo '{groupSam}'.");
+                        }
+                    }
                 }
             }
 

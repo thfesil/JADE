@@ -227,5 +227,45 @@ namespace Jade.Tests
             Assert.Equal(LdapResultCode.InsufficientAccessRights, operEscalateAttempt.ResultCode);
             Assert.Contains("AdminSDHolder", operEscalateAttempt.DiagnosticMessage);
         }
+
+        [Fact]
+        public async Task Groups_CreationAndMembership_ShouldResolveInLdapAndDatabase()
+        {
+            /* 1. Criacao do grupo G_CAOS_ADMIN pelo motor Jade */
+            uint groupDnt = _server.Database.CreateGroup("G_CAOS_ADMIN");
+            Assert.True(groupDnt > 0);
+
+            var groupEntry = _server.Database.FindBySamAccountName("G_CAOS_ADMIN");
+            Assert.NotNull(groupEntry);
+            Assert.Equal(JadeObjectClass.Group, groupEntry.ObjectClass);
+            Assert.NotNull(groupEntry.ObjectSid);
+
+            /* 2. Verificacao da associacao de membros */
+            bool memberAdded = _server.Database.AddMemberToGroup("G_CAOS_ADMIN", "Administrator");
+            Assert.True(memberAdded);
+
+            var members = _server.Database.GetGroupMembers("G_CAOS_ADMIN");
+            Assert.Contains("Administrator", members);
+
+            var userGroups = _server.Database.GetUserGroups("Administrator");
+            Assert.Contains("G_CAOS_ADMIN", userGroups);
+
+            /* 3. Validacao via protocolo LDAP e LDAPS */
+            await using var client = new JadeLdapClient();
+            await client.ConnectAsync("127.0.0.1", _server.ActiveLdapsPort, useImplicitLdaps: true);
+
+            var bindResp = await client.BindAsync("CN=Administrator,CN=Users,DC=jade,DC=local", "Admin@Jade2026!");
+            Assert.True(bindResp.IsSuccess);
+
+            var ldapGroup = await client.SearchBySamAccountNameAsync("DC=jade,DC=local", "G_CAOS_ADMIN");
+            Assert.NotNull(ldapGroup);
+            Assert.Equal("G_CAOS_ADMIN", ldapGroup.GetFirstValue("sAMAccountName"));
+            Assert.Contains("group", ldapGroup.Attributes["objectClass"]);
+            Assert.Contains("CN=Administrator,CN=Users,DC=jade,DC=local", ldapGroup.Attributes["member"]);
+
+            var ldapUser = await client.SearchBySamAccountNameAsync("DC=jade,DC=local", "Administrator");
+            Assert.NotNull(ldapUser);
+            Assert.Contains("CN=G_CAOS_ADMIN,CN=Users,DC=jade,DC=local", ldapUser.Attributes["memberOf"]);
+        }
     }
 }

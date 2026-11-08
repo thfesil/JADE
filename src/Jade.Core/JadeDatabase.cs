@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using Jade.Native;
 
 namespace Jade.Core
@@ -19,6 +21,8 @@ namespace Jade.Core
         private IntPtr _handle;
         private bool _disposed;
         private readonly object _syncRoot = new object();
+        private readonly string _groupMembersFilePath;
+        private readonly Dictionary<string, HashSet<string>> _groupMembers = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         public string BaseDirectory { get; }
         public string DatabaseName { get; }
@@ -28,6 +32,52 @@ namespace Jade.Core
             _handle = handle;
             BaseDirectory = baseDirectory;
             DatabaseName = databaseName;
+            _groupMembersFilePath = Path.Combine(baseDirectory, "jade_group_members.json");
+            LoadGroupMembers();
+        }
+
+        private void LoadGroupMembers()
+        {
+            try
+            {
+                if (File.Exists(_groupMembersFilePath))
+                {
+                    string json = File.ReadAllText(_groupMembersFilePath, Encoding.UTF8);
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(json);
+                    if (dict != null)
+                    {
+                        foreach (var kvp in dict)
+                        {
+                            _groupMembers[kvp.Key] = new HashSet<string>(kvp.Value, StringComparer.OrdinalIgnoreCase);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                /* Resiliente contra falhas ou corrupcao de I/O secundario */
+            }
+        }
+
+        private void SaveGroupMembers()
+        {
+            try
+            {
+                var dict = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kvp in _groupMembers)
+                {
+                    dict[kvp.Key] = kvp.Value.ToList();
+                }
+
+                string json = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+                string tmp = _groupMembersFilePath + ".tmp";
+                File.WriteAllText(tmp, json, Encoding.UTF8);
+                File.Move(tmp, _groupMembersFilePath, overwrite: true);
+            }
+            catch
+            {
+                /* Falhas de escrita de arquivo nao devem derrubar a transacao ESE */
+            }
         }
 
         public static JadeDatabase OpenOrCreate(string baseDirectory, string databaseName = "jade_ntds.dit")
@@ -56,7 +106,8 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                if ((entry.ObjectSid == null || entry.ObjectSid.Length == 0) && entry.ObjectClass == JadeObjectClass.User)
+                if ((entry.ObjectSid == null || entry.ObjectSid.Length == 0) &&
+                    (entry.ObjectClass == JadeObjectClass.User || entry.ObjectClass == JadeObjectClass.Group))
                 {
                     int ridRc = NativeMethods.AllocateRid(_handle, out uint allocatedRid);
                     if (ridRc == JadeConstants.ErrRidExhausted)
@@ -348,11 +399,169 @@ namespace Jade.Core
             }
         }
 
+        public uint CreateGroup(string groupSam, string domainDn = "DC=jade,DC=local", uint pdnt = 2)
+        {
+            if (string.IsNullOrWhiteSpace(groupSam))
+            {
+                throw new ArgumentException("O nome do grupo e mandatorio.", nameof(groupSam));
+            }
+
+            var entry = new JadeDirectoryEntry
+            {
+                Pdnt = pdnt,
+                ObjectClass = JadeObjectClass.Group,
+                SamAccountName = groupSam.Trim(),
+                UserPrincipalName = string.Empty,
+                UserAccountControl = 0,
+                AccessLevel = JadeAccessLevel.DomainUser,
+                ObjectGuid = Guid.NewGuid()
+            };
+
+            return AddObject(entry);
+        }
+
+        public List<JadeDirectoryEntry> ListGroups(bool includeDeleted = false)
+        {
+            return ListObjects(includeDeleted: includeDeleted, filterClass: JadeObjectClass.Group);
+        }
+
+        public bool AddMemberToGroup(string groupSam, string memberSam)
+        {
+            if (string.IsNullOrWhiteSpace(groupSam) || string.IsNullOrWhiteSpace(memberSam)) return false;
+
+            string gSam = ExtractSamAccountName(groupSam);
+            string mSam = ExtractSamAccountName(memberSam);
+
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                var groupEntry = FindBySamAccountName(gSam);
+                if (groupEntry == null || groupEntry.IsDeleted || groupEntry.ObjectClass != JadeObjectClass.Group)
+                {
+                    return false;
+                }
+
+                var memberEntry = FindBySamAccountName(mSam);
+                if (memberEntry == null || memberEntry.IsDeleted)
+                {
+                    return false;
+                }
+
+                if (!_groupMembers.TryGetValue(groupEntry.SamAccountName, out var members))
+                {
+                    members = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _groupMembers[groupEntry.SamAccountName] = members;
+                }
+
+                bool added = members.Add(memberEntry.SamAccountName);
+                if (added)
+                {
+                    SaveGroupMembers();
+                }
+                return added;
+            }
+        }
+
+        public bool RemoveMemberFromGroup(string groupSam, string memberSam)
+        {
+            if (string.IsNullOrWhiteSpace(groupSam) || string.IsNullOrWhiteSpace(memberSam)) return false;
+
+            string gSam = ExtractSamAccountName(groupSam);
+            string mSam = ExtractSamAccountName(memberSam);
+
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                if (_groupMembers.TryGetValue(gSam, out var members))
+                {
+                    bool removed = members.Remove(mSam);
+                    if (removed)
+                    {
+                        SaveGroupMembers();
+                    }
+                    return removed;
+                }
+
+                return false;
+            }
+        }
+
+        public IReadOnlyList<string> GetGroupMembers(string groupSam)
+        {
+            if (string.IsNullOrWhiteSpace(groupSam)) return Array.Empty<string>();
+
+            string gSam = ExtractSamAccountName(groupSam);
+
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                if (_groupMembers.TryGetValue(gSam, out var members))
+                {
+                    return members.ToList();
+                }
+
+                return Array.Empty<string>();
+            }
+        }
+
+        public IReadOnlyList<string> GetUserGroups(string userSam)
+        {
+            if (string.IsNullOrWhiteSpace(userSam)) return Array.Empty<string>();
+
+            string uSam = ExtractSamAccountName(userSam);
+
+            lock (_syncRoot)
+            {
+                EnsureNotDisposed();
+
+                var userGroups = new List<string>();
+                foreach (var kvp in _groupMembers)
+                {
+                    if (kvp.Value.Contains(uSam))
+                    {
+                        userGroups.Add(kvp.Key);
+                    }
+                }
+
+                return userGroups;
+            }
+        }
+
         public void DeleteObject(uint dnt, bool tombstone = true)
         {
             lock (_syncRoot)
             {
                 EnsureNotDisposed();
+
+                var entry = FindByDnt(dnt);
+                if (entry != null)
+                {
+                    if (entry.ObjectClass == JadeObjectClass.Group)
+                    {
+                        if (_groupMembers.Remove(entry.SamAccountName))
+                        {
+                            SaveGroupMembers();
+                        }
+                    }
+                    else
+                    {
+                        bool changed = false;
+                        foreach (var members in _groupMembers.Values)
+                        {
+                            if (members.Remove(entry.SamAccountName))
+                            {
+                                changed = true;
+                            }
+                        }
+                        if (changed)
+                        {
+                            SaveGroupMembers();
+                        }
+                    }
+                }
 
                 int rc = NativeMethods.DeleteObject(_handle, dnt, tombstone);
                 if (rc != JadeConstants.Ok)

@@ -104,6 +104,10 @@ namespace Jade.Server
                     {
                         HandleUserCommand(server, options, parts);
                     }
+                    else if (cmd == "group")
+                    {
+                        HandleGroupCommand(server, options, parts);
+                    }
                     else
                     {
                         Console.WriteLine($"Comando desconhecido: '{parts[0]}'. Digite 'help' para listar os comandos.");
@@ -171,6 +175,20 @@ namespace Jade.Server
 
                     uint dnt = server.Database.AddObject(entry);
                     server.Database.SetPassword(dnt, password);
+
+                    server.Database.AddMemberToGroup("Domain Users", sam);
+                    if (level == JadeAccessLevel.DomainAdmin)
+                    {
+                        server.Database.AddMemberToGroup("Domain Admins", sam);
+                    }
+                    else if (level == JadeAccessLevel.AccountOperator)
+                    {
+                        server.Database.AddMemberToGroup("Account Operators", sam);
+                    }
+                    else if (level == JadeAccessLevel.SecurityAuditor)
+                    {
+                        server.Database.AddMemberToGroup("Security Auditors", sam);
+                    }
 
                     var created = server.Database.FindBySamAccountName(sam);
                     string sidStr = created?.ObjectSid != null ? JadeSecurity.FormatSidString(created.ObjectSid) : "N/A";
@@ -371,6 +389,188 @@ namespace Jade.Server
             }
         }
 
+        private static void HandleGroupCommand(
+            JadeDomainControllerServer server,
+            JadeDomainControllerOptions options,
+            string[] parts)
+        {
+            if (parts.Length < 2)
+            {
+                Console.WriteLine("Uso: group <create|list|show|add-member|remove-member|delete> [argumentos]");
+                return;
+            }
+
+            string sub = parts[1].ToLowerInvariant();
+
+            switch (sub)
+            {
+                case "create":
+                {
+                    if (parts.Length < 3)
+                    {
+                        Console.WriteLine("Uso: group create <nome_do_grupo>");
+                        return;
+                    }
+
+                    string groupName = parts[2];
+                    var existing = server.Database.FindBySamAccountName(groupName);
+                    if (existing != null && !existing.IsDeleted)
+                    {
+                        Console.WriteLine($"Erro: O grupo ou objeto '{groupName}' ja existe no NTDS.DIT (DNT={existing.Dnt}).");
+                        return;
+                    }
+
+                    uint dnt = server.Database.CreateGroup(groupName, options.DomainDn);
+                    var created = server.Database.FindBySamAccountName(groupName);
+                    string sidStr = created?.ObjectSid != null ? JadeSecurity.FormatSidString(created.ObjectSid) : "N/A";
+
+                    Console.WriteLine("Grupo de seguranca provisionado com sucesso no NTDS.DIT:");
+                    Console.WriteLine($"  DNT                : {dnt}");
+                    Console.WriteLine($"  DistinguishedName  : CN={groupName},CN=Users,{options.DomainDn}");
+                    Console.WriteLine($"  sAMAccountName     : {groupName}");
+                    Console.WriteLine($"  objectSid          : {sidStr}");
+                    Console.WriteLine($"  groupType          : Global Security Group (-2147483646)");
+                    Console.WriteLine($"  Total de Membros   : 0");
+                    break;
+                }
+
+                case "list":
+                {
+                    var groups = server.Database.ListGroups(includeDeleted: false);
+                    Console.WriteLine("--------------------------------------------------------------------------------------------------------------------");
+                    Console.WriteLine($"{"DNT",-5} | {"Nome do Grupo",-25} | {"Total Membros",-15} | {"SID"}");
+                    Console.WriteLine("--------------------------------------------------------------------------------------------------------------------");
+                    foreach (var g in groups)
+                    {
+                        var members = server.Database.GetGroupMembers(g.SamAccountName);
+                        string sid = g.ObjectSid != null ? JadeSecurity.FormatSidString(g.ObjectSid) : "-";
+                        Console.WriteLine($"{g.Dnt,-5} | {g.SamAccountName,-25} | {members.Count,-15} | {sid}");
+                    }
+                    Console.WriteLine("--------------------------------------------------------------------------------------------------------------------");
+                    Console.WriteLine($"Total de grupos de seguranca ativos: {groups.Count}");
+                    break;
+                }
+
+                case "show":
+                {
+                    if (parts.Length < 3)
+                    {
+                        Console.WriteLine("Uso: group show <nome_do_grupo>");
+                        return;
+                    }
+
+                    string groupName = parts[2];
+                    var g = server.Database.FindBySamAccountName(groupName);
+                    if (g == null || g.IsDeleted || g.ObjectClass != JadeObjectClass.Group)
+                    {
+                        Console.WriteLine($"Grupo '{groupName}' nao localizado no diretorio.");
+                        return;
+                    }
+
+                    var members = server.Database.GetGroupMembers(g.SamAccountName);
+                    string sid = g.ObjectSid != null ? JadeSecurity.FormatSidString(g.ObjectSid) : "-";
+                    string membersDisplay = members.Count > 0 ? string.Join(", ", members) : "(nenhum membro associado)";
+
+                    Console.WriteLine("-----------------------------------------------------------------------");
+                    Console.WriteLine($"  DistinguishedName  : CN={g.SamAccountName},CN=Users,{options.DomainDn}");
+                    Console.WriteLine($"  DNT / PDNT         : {g.Dnt} / {g.Pdnt}");
+                    Console.WriteLine($"  sAMAccountName     : {g.SamAccountName}");
+                    Console.WriteLine($"  objectGUID         : {g.ObjectGuid}");
+                    Console.WriteLine($"  objectSid          : {sid}");
+                    Console.WriteLine($"  groupType          : Global Security Group (-2147483646)");
+                    Console.WriteLine($"  whenCreated (UTC)  : {g.WhenCreated.ToUniversalTime():yyyy-MM-dd HH:mm:ss} UTC");
+                    Console.WriteLine($"  Membros ({members.Count})      : {membersDisplay}");
+                    Console.WriteLine("-----------------------------------------------------------------------");
+                    break;
+                }
+
+                case "add-member":
+                {
+                    if (parts.Length < 4)
+                    {
+                        Console.WriteLine("Uso: group add-member <nome_do_grupo> <sAMAccountName>");
+                        return;
+                    }
+
+                    string groupName = parts[2];
+                    string userName = parts[3];
+
+                    var g = server.Database.FindBySamAccountName(groupName);
+                    if (g == null || g.IsDeleted || g.ObjectClass != JadeObjectClass.Group)
+                    {
+                        Console.WriteLine($"Grupo '{groupName}' nao localizado no diretorio.");
+                        return;
+                    }
+
+                    var u = server.Database.FindBySamAccountName(userName);
+                    if (u == null || u.IsDeleted)
+                    {
+                        Console.WriteLine($"Usuario '{userName}' nao localizado no diretorio.");
+                        return;
+                    }
+
+                    bool added = server.Database.AddMemberToGroup(g.SamAccountName, u.SamAccountName);
+                    if (added)
+                    {
+                        Console.WriteLine($"Usuario '{u.SamAccountName}' associado com sucesso ao grupo '{g.SamAccountName}'.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Usuario '{u.SamAccountName}' ja e membro do grupo '{g.SamAccountName}'.");
+                    }
+                    break;
+                }
+
+                case "remove-member":
+                {
+                    if (parts.Length < 4)
+                    {
+                        Console.WriteLine("Uso: group remove-member <nome_do_grupo> <sAMAccountName>");
+                        return;
+                    }
+
+                    string groupName = parts[2];
+                    string userName = parts[3];
+
+                    bool removed = server.Database.RemoveMemberFromGroup(groupName, userName);
+                    if (removed)
+                    {
+                        Console.WriteLine($"Usuario '{userName}' desassociado com sucesso do grupo '{groupName}'.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Usuario '{userName}' nao pertencia ao grupo '{groupName}' ou grupo inexistente.");
+                    }
+                    break;
+                }
+
+                case "delete":
+                {
+                    if (parts.Length < 3)
+                    {
+                        Console.WriteLine("Uso: group delete <nome_do_grupo>");
+                        return;
+                    }
+
+                    string groupName = parts[2];
+                    var g = server.Database.FindBySamAccountName(groupName);
+                    if (g == null || g.IsDeleted || g.ObjectClass != JadeObjectClass.Group)
+                    {
+                        Console.WriteLine($"Grupo '{groupName}' nao localizado no diretorio.");
+                        return;
+                    }
+
+                    server.Database.DeleteObject(g.Dnt, tombstone: true);
+                    Console.WriteLine($"Grupo '{g.SamAccountName}' (DNT={g.Dnt}) movido para o container Tombstone (isDeleted=1).");
+                    break;
+                }
+
+                default:
+                    Console.WriteLine($"Subcomando de grupo desconhecido: '{sub}'. Digite 'help' para ajuda.");
+                    break;
+            }
+        }
+
         private static void HandleRidCommand(JadeDomainControllerServer server, string[] parts)
         {
             if (parts.Length >= 3 && parts[1].Equals("exhaust", StringComparison.OrdinalIgnoreCase))
@@ -395,6 +595,7 @@ namespace Jade.Server
         {
             uint totalObjects = server.Database.CountObjects();
             var activeUsers = server.Database.ListObjects(includeDeleted: false, filterClass: JadeObjectClass.User);
+            var activeGroups = server.Database.ListGroups(includeDeleted: false);
 
             Console.WriteLine("-----------------------------------------------------------------------");
             Console.WriteLine("  STATUS DO CONTROLADOR DE DOMINIO JADE");
@@ -403,6 +604,7 @@ namespace Jade.Server
             Console.WriteLine($"  Conexoes TCP Ativas      : {server.ActiveConnectionCount}");
             Console.WriteLine($"  Total Objetos (NTDS.DIT) : {totalObjects}");
             Console.WriteLine($"  Contas de Usuario Ativas : {activeUsers.Count}");
+            Console.WriteLine($"  Grupos de Seguranca      : {activeGroups.Count}");
             Console.WriteLine($"  FSMO RID Exhaust (8209)  : {(server.IsRidExhaustionSimulated ? "SIMULACAO ATIVA (FALHA INJETADA)" : "OPERACIONAL (NORMAL)")}");
             Console.WriteLine("-----------------------------------------------------------------------");
         }
@@ -419,6 +621,12 @@ namespace Jade.Server
             Console.WriteLine("  user role <sam> <Nivel>             Altera o nivel de acesso RBAC da conta");
             Console.WriteLine("  user auth <sam> <senha>             Testa autenticacao e retorna o nivel de privilegio e subcodigo AD");
             Console.WriteLine("  user delete <sam>                   Move o usuario para Tombstone (isDeleted = 1)");
+            Console.WriteLine("  group create <nome>                 Cria grupo de seguranca no NTDS.DIT com SID e RID alocado");
+            Console.WriteLine("  group list                          Lista todos os grupos do Active Directory e contagem de membros");
+            Console.WriteLine("  group show <nome>                   Exibe os atributos do grupo, SID e lista de membros");
+            Console.WriteLine("  group add-member <grupo> <usuario>  Adiciona um usuario como membro do grupo");
+            Console.WriteLine("  group remove-member <grupo> <usuario> Remove um usuario do grupo");
+            Console.WriteLine("  group delete <nome>                 Move o grupo para Tombstone (isDeleted = 1)");
             Console.WriteLine("  rid exhaust <on|off>                Ativa ou desativa a injecao de falha FSMO RID Master (Win32 8209)");
             Console.WriteLine("  status                              Exibe estatisticas em tempo real do Controlador de Dominio");
             Console.WriteLine("  help                                Exibe este guia de comandos e a matriz de niveis de acesso");
