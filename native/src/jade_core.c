@@ -1,3 +1,5 @@
+#ifdef _WIN32
+
 #include "../include/jade.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -753,3 +755,9 @@ JADE_API int jade_count_objects(jade_db_t* db, uint32_t* out_count) {
     *out_count = count;
     return JADE_OK;
 }
+
+#else
+
+#include "jade_core_posix.c"
+
+#endif /* _WIN32 */

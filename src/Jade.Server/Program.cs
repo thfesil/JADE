@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Jade.Core;
+using Jade.Native;
 using Jade.Server.Ldap;
 
 namespace Jade.Server
@@ -23,6 +25,9 @@ namespace Jade.Server
             string dataDir = GetArgValue(args, "--data-dir") ?? Path.Combine(AppContext.BaseDirectory, "jade_dc_data");
             int ldapPort = int.TryParse(GetArgValue(args, "--ldap-port"), out int p1) ? p1 : 3890;
             int ldapsPort = int.TryParse(GetArgValue(args, "--ldaps-port"), out int p2) ? p2 : 6360;
+            bool daemonMode = args.Any(a =>
+                a.Equals("--daemon", StringComparison.OrdinalIgnoreCase) ||
+                a.Equals("--headless", StringComparison.OrdinalIgnoreCase));
 
             var options = new JadeDomainControllerOptions
             {
@@ -34,7 +39,19 @@ namespace Jade.Server
             };
 
             await using var server = new JadeDomainControllerServer(options);
-            server.Start();
+            try
+            {
+                server.Start();
+            }
+            catch (SocketException sex) when (sex.SocketErrorCode == SocketError.AccessDenied)
+            {
+                Console.Error.WriteLine($"[ERRO DE REDE] Permissao negada ao abrir porta LDAP ({ldapPort}) ou LDAPS ({ldapsPort}).");
+                if (!OperatingSystem.IsWindows() && (ldapPort < 1024 || ldapsPort < 1024))
+                {
+                    Console.Error.WriteLine("No Linux, portas abaixo de 1024 exigem root ou CAP_NET_BIND_SERVICE. Use --ldap-port 3890 --ldaps-port 6360.");
+                }
+                return 1;
+            }
 
             Console.WriteLine();
             Console.WriteLine("=======================================================================");
@@ -47,11 +64,32 @@ namespace Jade.Server
             Console.WriteLine($"  Thumbprint SHA-1       : {server.ServerCertificate.Thumbprint}");
             Console.WriteLine($"  Base NTDS.DIT          : {Path.Combine(options.DataDirectory, options.DatabaseName)}");
             Console.WriteLine("=======================================================================");
-            PrintHelp();
 
-            await RunInteractiveConsoleLoopAsync(server, options).ConfigureAwait(false);
+            if (daemonMode)
+            {
+                Console.WriteLine("Modo daemon ativo. Pressione Ctrl+C ou envie SIGTERM para encerrar.");
+                using var cts = new CancellationTokenSource();
+                Console.CancelKeyPress += (_, e) =>
+                {
+                    e.Cancel = true;
+                    cts.Cancel();
+                };
+                AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+            else
+            {
+                PrintHelp();
+                await RunInteractiveConsoleLoopAsync(server, options).ConfigureAwait(false);
+            }
 
-            Console.WriteLine("Encerrando servicos LDAP/LDAPS e comitando transacoes ESE...");
+            Console.WriteLine("Encerrando servicos LDAP/LDAPS e comitando transacoes...");
             return 0;
         }
 
@@ -942,9 +980,15 @@ namespace Jade.Server
 
         private static void PrintBanner()
         {
+            string storageLabel = OperatingSystem.IsWindows()
+                ? "Windows Jet Blue ESE (esent.dll)"
+                : (NativeMethods.IsNativeLibraryAvailable()
+                    ? "Portable POSIX Native (libjade.so)"
+                    : "Portable Managed Storage (.NET 8)");
+
             Console.WriteLine("=======================================================================");
             Console.WriteLine("  JADE SERVER: EMULATED ACTIVE DIRECTORY DOMAIN CONTROLLER");
-            Console.WriteLine("  Storage: Windows Jet Blue ESE (esent.dll) | Protocol: LDAPv3 / LDAPS");
+            Console.WriteLine($"  Storage: {storageLabel} | Protocol: LDAPv3 / LDAPS");
             Console.WriteLine("=======================================================================");
         }
     }

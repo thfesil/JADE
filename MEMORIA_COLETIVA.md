@@ -145,3 +145,15 @@ flowchart TD
   6. Suite automatizada de testes xUnit expandida em JadeDomainControllerServerTests.cs com 100% de aprovacao (10 de 10 testes aprovados) e teste interativo ponta a ponta validado.
 - **Recomendacoes Tecnicas:**
   - Os grupos corporativos como G_CAOS_ADMIN e Domain Admins ja estao totalmente integrados e disponiveis para autenticacao e operacao de ferramentas IAM e clientes LDAP externos como o CAOS.
+
+### [15/11/2026] - Suporte Multiplataforma Linux / POSIX e Portabilidade entre Maquinas Jade 1 (Rev 7)
+- **Modelo:** Gemini 4
+- **Contexto:** Preparacao completa do projeto JADE para execucao nativa em Linux e portabilidade entre diferentes maquinas Windows e Linux, mantendo compatibilidade total com o motor Jet Blue ESE (`esent.dll`) no Windows.
+- **Acoes Executadas:**
+  1. Refatoracao de `native/include/jade.h`, `native/src/jade_core.c`, `native/src/main.c` e `native/Makefile`, com adicao de `native/src/jade_core_posix.c` para compilacao POSIX (`libjade.so` / `libjade.dylib`) usando `uint16_t` (`jade_wchar_t`) compativel com `CharSet.Unicode` do .NET e persistencia atomica com `pthread_mutex_t`.
+  2. Remocao do caminho absoluto fixo em `src/Jade.Native/NativeMethods.cs` e implementacao de resolucao dinamica por plataforma e arquitetura (`win-*`, `linux-*`, `osx-*`).
+  3. Introducao da abstracao `IJadeStorageBackend` em `src/Jade.Core/Storage/` com `NativeJadeBackend` e `ManagedPortableBackend` (fallback automatico em Linux/macOS quando a biblioteca nativa nao estiver compilada, ou forcado via `JADE_STORAGE_BACKEND=managed`).
+  4. Adaptacao de `TlsCertificateManager.cs` para usar `X509KeyStorageFlags.Exportable` em sistemas nao Windows (evitando falhas de `PersistKeySet` em containers Linux), alem de adicao do modo `--daemon` / `--headless` e tratamento de portas privilegiadas em `Program.cs`.
+  5. Atualizacao de `Jade.Server.csproj` e `Jade.Tests.csproj` para empacotamento condicional de `libjade.so` e `libjade.dylib`, e adicao de testes em `tests/Jade.Tests/PortableBackendTests.cs`.
+- **Recomendacoes Tecnicas:**
+  - Em servidores ou containers Linux, executar `make` dentro de `native/` para compilar `libjade.so` quando `gcc` estiver disponivel, ou executar diretamente via `dotnet run` / `dotnet test` utilizando o backend gerenciado portavel.

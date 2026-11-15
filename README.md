@@ -4,6 +4,15 @@ Jade e um emulador autonomo, leve e de alta fidelidade de Controlador de Dominio
 
 ---
 
+## Novidades Recentes (Jade 1 - Rev 7)
+
+* **Suporte Multiplataforma para Linux e Portabilidade entre Maquinas:**
+  * Camada nativa C (`native/include/jade.h`, `native/src/jade_core_posix.c`, `native/Makefile`) preparada para compilacao no Linux (`libjade.so`) e macOS (`libjade.dylib`) mantendo compatibilidade binaria UTF-16LE (`jade_wchar_t`) com P/Invoke .NET e preservando `esent.dll` no Windows.
+  * Resolucao dinamica de bibliotecas nativas em `NativeMethods.cs` por sistema operacional e arquitetura (`jade.dll`, `libjade.so`, `libjade.dylib`, `runtimes/<rid>/native/`), removendo caminhos fixos de maquina.
+  * Motor de persistencia gerenciado portavel (`ManagedPortableBackend`) em `Jade.Core` como fallback automatico em ambientes Linux/POSIX onde `libjade.so` nao esteja compilada, selecionavel tambem via `JADE_STORAGE_BACKEND=managed|native`.
+  * Ajustes de certificados X.509 (`TlsCertificateManager.cs`) para compatibilidade com OpenSSL no Linux sem dependencia de `PersistKeySet` em diretorios restritos.
+  * Suporte ao modo `--daemon` / `--headless` em `jade-server` para execucao em containers Docker e servicos `systemd` no Linux, alem de tratamento claro para portas nao privilegiadas (< 1024).
+
 ## Novidades Recentes (Jade 1 - Rev 6)
 
 * Implementacao de **Grupos de Seguranca do Active Directory (`objectClass: group`)** e comandos da familia `group` no Console Administrativo Interativo (`JADE-DC>`):

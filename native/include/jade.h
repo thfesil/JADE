@@ -1,15 +1,29 @@
 #ifndef JADE_H
 #define JADE_H
 
-#include <windows.h>
-#include <esent.h>
+#ifdef _WIN32
+    #include <windows.h>
+    #include <esent.h>
+#endif
 #include <stdint.h>
 #include <stdbool.h>
+#include <wchar.h>
 
-#ifdef JADE_EXPORTS
-    #define JADE_API __declspec(dllexport)
+#ifdef _WIN32
+    #ifdef JADE_EXPORTS
+        #define JADE_API __declspec(dllexport)
+    #else
+        #define JADE_API __declspec(dllimport)
+    #endif
+    typedef wchar_t jade_wchar_t;
 #else
-    #define JADE_API __declspec(dllimport)
+    #if defined(__GNUC__) && __GNUC__ >= 4
+        #define JADE_API __attribute__((visibility("default")))
+    #else
+        #define JADE_API
+    #endif
+    /* .NET CharSet.Unicode marshals strings as UTF-16LE (2 bytes) on all platforms */
+    typedef uint16_t jade_wchar_t;
 #endif
 
 /* Fallback definitions for standard ESENT constants if omitted by MinGW headers */
@@ -75,8 +89,8 @@ typedef struct {
     uint32_t pdnt;
     uint32_t ncdnt;
     uint32_t object_class;
-    wchar_t  sam_account_name[256];
-    wchar_t  user_principal_name[256];
+    jade_wchar_t sam_account_name[256];
+    jade_wchar_t user_principal_name[256];
     uint32_t user_account_control;
     uint8_t  unicode_pwd[512];
     uint32_t unicode_pwd_len;
@@ -107,7 +121,7 @@ JADE_API int jade_db_open(const char* base_dir, const char* db_name, bool create
 JADE_API int jade_db_close(jade_db_t* db);
 
 JADE_API int jade_add_object(jade_db_t* db, const jade_object_t* obj, uint32_t* out_dnt);
-JADE_API int jade_find_by_sam(jade_db_t* db, const wchar_t* sam, jade_object_t* out_obj);
+JADE_API int jade_find_by_sam(jade_db_t* db, const jade_wchar_t* sam, jade_object_t* out_obj);
 JADE_API int jade_find_by_dnt(jade_db_t* db, uint32_t dnt, jade_object_t* out_obj);
 JADE_API int jade_modify_uac(jade_db_t* db, uint32_t dnt, uint32_t new_uac);
 JADE_API int jade_modify_ncdnt(jade_db_t* db, uint32_t dnt, uint32_t new_ncdnt);

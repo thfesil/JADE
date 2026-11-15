@@ -14,32 +14,83 @@ namespace Jade.Native
             NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, ResolveDll);
         }
 
+        private static string GetPlatformLibraryFileName()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return "jade.dll";
+            }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                return "libjade.dylib";
+            }
+            return "libjade.so";
+        }
+
+        private static string GetRuntimeIdentifier()
+        {
+            string os = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win"
+                : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "osx"
+                : "linux";
+
+            string arch = RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "x64",
+                Architecture.X86 => "x86",
+                Architecture.Arm64 => "arm64",
+                Architecture.Arm => "arm",
+                _ => "x64"
+            };
+
+            return $"{os}-{arch}";
+        }
+
+        public static bool IsNativeLibraryAvailable()
+        {
+            return ResolveDll(LibraryName, typeof(NativeMethods).Assembly, null) != IntPtr.Zero;
+        }
+
         private static IntPtr ResolveDll(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
         {
-            if (libraryName == LibraryName)
+            if (libraryName != LibraryName)
             {
-                string baseDir = AppContext.BaseDirectory;
+                return IntPtr.Zero;
+            }
 
-                string[] candidatePaths = new[]
-                {
-                    Path.Combine(baseDir, "jade.dll"),
-                    Path.Combine(baseDir, "bin", "jade.dll"),
-                    Path.Combine(baseDir, "runtimes", "win-x64", "native", "jade.dll"),
-                    Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "native", "bin", "jade.dll")),
-                    Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "native", "bin", "jade.dll")),
-                    @"F:\Projects\Jade\native\bin\jade.dll"
-                };
+            string libFileName = GetPlatformLibraryFileName();
+            string rid = GetRuntimeIdentifier();
+            string baseDir = AppContext.BaseDirectory;
 
-                foreach (string path in candidatePaths)
+            var candidatePaths = new System.Collections.Generic.List<string>
+            {
+                Path.Combine(baseDir, libFileName),
+                Path.Combine(baseDir, "bin", libFileName),
+                Path.Combine(baseDir, "runtimes", rid, "native", libFileName)
+            };
+
+            string current = baseDir;
+            for (int i = 0; i < 6; i++)
+            {
+                candidatePaths.Add(Path.GetFullPath(Path.Combine(current, "native", "bin", libFileName)));
+                DirectoryInfo? parent = Directory.GetParent(current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (parent == null)
                 {
-                    if (File.Exists(path))
-                    {
-                        if (NativeLibrary.TryLoad(path, out IntPtr handle))
-                        {
-                            return handle;
-                        }
-                    }
+                    break;
                 }
+                current = parent.FullName;
+            }
+
+            foreach (string path in candidatePaths)
+            {
+                if (File.Exists(path) && NativeLibrary.TryLoad(path, out IntPtr handle))
+                {
+                    return handle;
+                }
+            }
+
+            if (NativeLibrary.TryLoad(libFileName, assembly, searchPath, out IntPtr sysHandle))
+            {
+                return sysHandle;
             }
 
             return IntPtr.Zero;

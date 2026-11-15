@@ -4,10 +4,18 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using Jade.Core.Storage;
 using Jade.Native;
 
 namespace Jade.Core
 {
+    public enum JadeStorageBackendMode
+    {
+        Auto = 0,
+        Native = 1,
+        Managed = 2
+    }
+
     public class JadeAuthenticationResult
     {
         public bool IsAuthenticated { get; init; }
@@ -18,7 +26,7 @@ namespace Jade.Core
 
     public class JadeDatabase : IDisposable
     {
-        private IntPtr _handle;
+        private IJadeStorageBackend? _backend;
         private bool _disposed;
         private readonly object _syncRoot = new object();
         private readonly string _groupMembersFilePath;
@@ -26,12 +34,14 @@ namespace Jade.Core
 
         public string BaseDirectory { get; }
         public string DatabaseName { get; }
+        public bool IsUsingNativeBackend { get; }
 
-        private JadeDatabase(IntPtr handle, string baseDirectory, string databaseName)
+        private JadeDatabase(IJadeStorageBackend backend, string baseDirectory, string databaseName, bool isNative)
         {
-            _handle = handle;
+            _backend = backend;
             BaseDirectory = baseDirectory;
             DatabaseName = databaseName;
+            IsUsingNativeBackend = isNative;
             _groupMembersFilePath = Path.Combine(baseDirectory, "jade_group_members.json");
             LoadGroupMembers();
         }
@@ -80,22 +90,75 @@ namespace Jade.Core
             }
         }
 
-        public static JadeDatabase OpenOrCreate(string baseDirectory, string databaseName = "jade_ntds.dit")
+        public static JadeDatabase OpenOrCreate(
+            string baseDirectory,
+            string databaseName = "jade_ntds.dit",
+            JadeStorageBackendMode backendMode = JadeStorageBackendMode.Auto)
         {
             if (string.IsNullOrWhiteSpace(baseDirectory))
             {
                 throw new ArgumentException("O diretorio base da base de dados e mandatorio.", nameof(baseDirectory));
             }
 
-            NativeMethods.SystemInit();
-
-            int rc = NativeMethods.DbOpen(baseDirectory, databaseName, true, out IntPtr db);
-            if (rc != JadeConstants.Ok || db == IntPtr.Zero)
+            JadeStorageBackendMode effectiveMode = ResolveBackendMode(backendMode);
+            if (effectiveMode == JadeStorageBackendMode.Managed)
             {
-                throw new JadeException(rc, $"Falha ao abrir ou criar o banco ESE em {baseDirectory}\\{databaseName}");
+                return new JadeDatabase(
+                    ManagedPortableBackend.OpenOrCreate(baseDirectory, databaseName),
+                    baseDirectory,
+                    databaseName,
+                    isNative: false);
             }
 
-            return new JadeDatabase(db, baseDirectory, databaseName);
+            if (effectiveMode == JadeStorageBackendMode.Native)
+            {
+                return new JadeDatabase(
+                    NativeJadeBackend.OpenOrCreate(baseDirectory, databaseName),
+                    baseDirectory,
+                    databaseName,
+                    isNative: true);
+            }
+
+            if (NativeMethods.IsNativeLibraryAvailable())
+            {
+                try
+                {
+                    return new JadeDatabase(
+                        NativeJadeBackend.OpenOrCreate(baseDirectory, databaseName),
+                        baseDirectory,
+                        databaseName,
+                        isNative: true);
+                }
+                catch (DllNotFoundException) when (!OperatingSystem.IsWindows())
+                {
+                    /* Fallback para backend portavel caso a biblioteca nativa nao esteja compilada na maquina Linux/macOS */
+                }
+            }
+
+            return new JadeDatabase(
+                ManagedPortableBackend.OpenOrCreate(baseDirectory, databaseName),
+                baseDirectory,
+                databaseName,
+                isNative: false);
+        }
+
+        private static JadeStorageBackendMode ResolveBackendMode(JadeStorageBackendMode requested)
+        {
+            if (requested != JadeStorageBackendMode.Auto)
+            {
+                return requested;
+            }
+
+            string? env = Environment.GetEnvironmentVariable("JADE_STORAGE_BACKEND");
+            if (string.Equals(env, "managed", StringComparison.OrdinalIgnoreCase))
+            {
+                return JadeStorageBackendMode.Managed;
+            }
+            if (string.Equals(env, "native", StringComparison.OrdinalIgnoreCase))
+            {
+                return JadeStorageBackendMode.Native;
+            }
+            return JadeStorageBackendMode.Auto;
         }
 
         public uint AddObject(JadeDirectoryEntry entry)
@@ -109,7 +172,7 @@ namespace Jade.Core
                 if ((entry.ObjectSid == null || entry.ObjectSid.Length == 0) &&
                     (entry.ObjectClass == JadeObjectClass.User || entry.ObjectClass == JadeObjectClass.Group))
                 {
-                    int ridRc = NativeMethods.AllocateRid(_handle, out uint allocatedRid);
+                    int ridRc = _backend!.AllocateRid(out uint allocatedRid);
                     if (ridRc == JadeConstants.ErrRidExhausted)
                     {
                         throw new JadeException(JadeConstants.ErrRidExhausted, "O pool de RIDs do dominio foi esgotado (Win32 ERROR_DS_RIDM_UNWILLING_TO_PERFORM / 00002011).");
@@ -121,7 +184,7 @@ namespace Jade.Core
                 }
 
                 var native = entry.ToNative();
-                int rc = NativeMethods.AddObject(_handle, ref native, out uint dnt);
+                int rc = _backend!.AddObject(ref native, out uint dnt);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao inserir objeto '{entry.SamAccountName}' no Active Directory");
@@ -140,7 +203,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.FindBySam(_handle, samAccountName, out JadeNativeObject native);
+                int rc = _backend!.FindBySam(samAccountName, out JadeNativeObject native);
                 if (rc == JadeConstants.ErrRecordNotFound)
                 {
                     return null;
@@ -160,7 +223,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.FindByDnt(_handle, dnt, out JadeNativeObject native);
+                int rc = _backend!.FindByDnt(dnt, out JadeNativeObject native);
                 if (rc == JadeConstants.ErrRecordNotFound)
                 {
                     return null;
@@ -180,7 +243,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.ModifyUac(_handle, dnt, (uint)uac);
+                int rc = _backend!.ModifyUac(dnt, (uint)uac);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao atualizar userAccountControl do DNT '{dnt}' para {(uint)uac}");
@@ -194,7 +257,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.ModifyNcdnt(_handle, dnt, (uint)newLevel);
+                int rc = _backend!.ModifyNcdnt(dnt, (uint)newLevel);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao atualizar o nivel de acesso (RBAC) do DNT '{dnt}' para {newLevel}");
@@ -215,7 +278,7 @@ namespace Jade.Core
 
                 for (uint dnt = 1; dnt <= maxDntToScan && foundCount < total; dnt++)
                 {
-                    int rc = NativeMethods.FindByDnt(_handle, dnt, out JadeNativeObject native);
+                    int rc = _backend!.FindByDnt(dnt, out JadeNativeObject native);
                     if (rc == JadeConstants.Ok)
                     {
                         foundCount++;
@@ -246,7 +309,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.SetPassword(_handle, dnt, pwdHash, (uint)pwdHash.Length);
+                int rc = _backend!.SetPassword(dnt, pwdHash, (uint)pwdHash.Length);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao redefinir a senha do DNT '{dnt}'");
@@ -264,7 +327,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.SetPassword(_handle, dnt, pwdHash, (uint)pwdHash.Length);
+                int rc = _backend!.SetPassword(dnt, pwdHash, (uint)pwdHash.Length);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao redefinir a senha LDAP do DNT '{dnt}'");
@@ -371,7 +434,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.AllocateRid(_handle, out uint rid);
+                int rc = _backend!.AllocateRid(out uint rid);
                 if (rc == JadeConstants.ErrRidExhausted)
                 {
                     throw new JadeException(JadeConstants.ErrRidExhausted, "O pool de RIDs do dominio foi esgotado (Win32 ERROR_DS_RIDM_UNWILLING_TO_PERFORM / 00002011).");
@@ -391,7 +454,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.SetRidExhaustionSimulation(_handle, simulate);
+                int rc = _backend!.SetRidExhaustionSimulation(simulate);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, "Falha ao definir o estado de simulacao de esgotamento de RIDs");
@@ -563,7 +626,7 @@ namespace Jade.Core
                     }
                 }
 
-                int rc = NativeMethods.DeleteObject(_handle, dnt, tombstone);
+                int rc = _backend!.DeleteObject(dnt, tombstone);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, $"Falha ao excluir o objeto DNT '{dnt}' (Tombstone: {tombstone})");
@@ -577,7 +640,7 @@ namespace Jade.Core
             {
                 EnsureNotDisposed();
 
-                int rc = NativeMethods.CountObjects(_handle, out uint total);
+                int rc = _backend!.CountObjects(out uint total);
                 if (rc != JadeConstants.Ok)
                 {
                     throw new JadeException(rc, "Falha ao contabilizar registros na tabela datatable");
@@ -589,7 +652,7 @@ namespace Jade.Core
 
         private void EnsureNotDisposed()
         {
-            if (_disposed || _handle == IntPtr.Zero)
+            if (_disposed || _backend == null)
             {
                 throw new ObjectDisposedException(nameof(JadeDatabase));
             }
@@ -606,10 +669,10 @@ namespace Jade.Core
             {
                 if (!_disposed)
                 {
-                    if (_handle != IntPtr.Zero)
+                    if (_backend != null)
                     {
-                        NativeMethods.DbClose(_handle);
-                        _handle = IntPtr.Zero;
+                        _backend.Dispose();
+                        _backend = null;
                     }
                     _disposed = true;
                     GC.SuppressFinalize(this);

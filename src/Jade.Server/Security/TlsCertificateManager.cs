@@ -10,21 +10,29 @@ namespace Jade.Server.Security
     {
         private const string CertPassword = "JadeDcCertKeyPassword";
 
+        private static X509KeyStorageFlags GetKeyStorageFlags()
+        {
+            return OperatingSystem.IsWindows()
+                ? (X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet)
+                : X509KeyStorageFlags.Exportable;
+        }
+
         /// <summary>
         /// Obtem ou gera um certificado digital X.509 RSA-2048 autoassinado compativel com o SChannel do Windows
-        /// para operacoes LDAPS (Porta 636) e StartTLS (Porta 389).
+        /// e OpenSSL no Linux para operacoes LDAPS e StartTLS.
         /// </summary>
         public static X509Certificate2 GetOrCreateServerCertificate(string storageDirectory, string dnsHostName = "dc01.jade.local")
         {
             string certDir = Path.Combine(storageDirectory, "certs");
             Directory.CreateDirectory(certDir);
             string pfxPath = Path.Combine(certDir, "jade_dc_ldaps.pfx");
+            X509KeyStorageFlags storageFlags = GetKeyStorageFlags();
 
             if (File.Exists(pfxPath))
             {
                 try
                 {
-                    var existing = new X509Certificate2(pfxPath, CertPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                    var existing = new X509Certificate2(pfxPath, CertPassword, storageFlags);
                     if (existing.NotAfter > DateTime.UtcNow.AddDays(7))
                     {
                         return existing;
@@ -81,7 +89,7 @@ namespace Jade.Server.Security
             }
 
             /* No Windows SChannel, o certificado do servidor deve ser carregado a partir de PFX com chave privada persistivel */
-            return new X509Certificate2(pfxBytes, CertPassword, X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+            return new X509Certificate2(pfxBytes, CertPassword, storageFlags);
         }
     }
 }

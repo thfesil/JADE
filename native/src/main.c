@@ -3,10 +3,33 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void set_jade_str(jade_wchar_t* dst, size_t cap, const char* ascii) {
+    size_t i = 0;
+    while (i + 1 < cap && ascii[i] != '\0') {
+        dst[i] = (jade_wchar_t)(unsigned char)ascii[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static void jade_str_to_ascii(const jade_wchar_t* src, char* dst, size_t cap) {
+    size_t i = 0;
+    while (i + 1 < cap && src[i] != 0) {
+        jade_wchar_t ch = src[i];
+        dst[i] = (ch >= 32 && ch < 127) ? (char)ch : '?';
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static void print_banner(void) {
     printf("=================================================================\n");
     printf("  JADE: Jet Active Directory Emulator\n");
+#ifdef _WIN32
     printf("  Engine: Microsoft Windows Jet Blue ESE (esent.dll)\n");
+#else
+    printf("  Engine: Portable POSIX Storage Engine (libjade.so)\n");
+#endif
     printf("  Architecture: NTDS.DIT B+Tree Datatable (DNT/PDNT/FSMO)\n");
     printf("=================================================================\n\n");
 }
@@ -18,7 +41,7 @@ static int run_self_test(const char* data_dir) {
         return 1;
     }
 
-    printf("[2/8] Criando base de dados simulada NTDS.DIT em: %s\\jade_ntds.dit\n", data_dir);
+    printf("[2/8] Criando base de dados simulada NTDS.DIT em: %s/jade_ntds.dit\n", data_dir);
     jade_db_t* db = NULL;
     int rc = jade_db_open(data_dir, "jade_ntds.dit", true, &db);
     if (rc != JADE_OK || !db) {
@@ -32,7 +55,7 @@ static int run_self_test(const char* data_dir) {
     memset(&domain_root, 0, sizeof(domain_root));
     domain_root.pdnt = 0;
     domain_root.object_class = JADE_CLASS_CONTAINER;
-    wcscpy(domain_root.sam_account_name, L"DC=jade,DC=local");
+    set_jade_str(domain_root.sam_account_name, 256, "DC=jade,DC=local");
     uint32_t root_dnt = 0;
     jade_add_object(db, &domain_root, &root_dnt);
     printf("      Dominio Raiz criado com DNT: %u\n", root_dnt);
@@ -41,7 +64,7 @@ static int run_self_test(const char* data_dir) {
     memset(&ou_users, 0, sizeof(ou_users));
     ou_users.pdnt = root_dnt;
     ou_users.object_class = JADE_CLASS_ORGANIZATIONAL_UNIT;
-    wcscpy(ou_users.sam_account_name, L"OU=Colaboradores");
+    set_jade_str(ou_users.sam_account_name, 256, "OU=Colaboradores");
     uint32_t ou_dnt = 0;
     rc = jade_add_object(db, &ou_users, &ou_dnt);
     if (rc != JADE_OK) {
@@ -56,8 +79,8 @@ static int run_self_test(const char* data_dir) {
     memset(&user, 0, sizeof(user));
     user.pdnt = ou_dnt;
     user.object_class = JADE_CLASS_USER;
-    wcscpy(user.sam_account_name, L"analista.sec");
-    wcscpy(user.user_principal_name, L"analista.sec@jade.local");
+    set_jade_str(user.sam_account_name, 256, "analista.sec");
+    set_jade_str(user.user_principal_name, 256, "analista.sec@jade.local");
     user.user_account_control = JADE_UAC_NORMAL_ACCOUNT; /* 512 */
     
     const char* pwd_raw = "SenhaForte#2026";
@@ -78,14 +101,18 @@ static int run_self_test(const char* data_dir) {
 
     printf("[5/8] Testando Busca Indexada O(1) na B+Tree por sAMAccountName...\n");
     jade_object_t found;
-    rc = jade_find_by_sam(db, L"analista.sec", &found);
+    jade_wchar_t lookup_sam[256];
+    set_jade_str(lookup_sam, 256, "analista.sec");
+    rc = jade_find_by_sam(db, lookup_sam, &found);
     if (rc != JADE_OK) {
         printf("FALHA: Objeto nao localizado por sAMAccountName!\n");
         jade_db_close(db);
         return 1;
     }
-    printf("      Sucesso: Objeto localizado. DNT=%u, UPN=%ls, Ativo=%s\n", 
-           found.dnt, found.user_principal_name, (found.user_account_control & JADE_UAC_ACCOUNTDISABLE) ? "Nao" : "Sim");
+    char upn_buf[256];
+    jade_str_to_ascii(found.user_principal_name, upn_buf, sizeof(upn_buf));
+    printf("      Sucesso: Objeto localizado. DNT=%u, UPN=%s, Ativo=%s\n",
+           found.dnt, upn_buf, (found.user_account_control & JADE_UAC_ACCOUNTDISABLE) ? "Nao" : "Sim");
 
     printf("[6/8] Testando Modificacoes (Desativacao UAC 514 e Redefinicao de Senha)...\n");
     jade_modify_uac(db, user_dnt, JADE_UAC_NORMAL_ACCOUNT | JADE_UAC_ACCOUNTDISABLE); /* 514 */
@@ -116,8 +143,10 @@ static int run_self_test(const char* data_dir) {
     printf("[8/8] Testando Ciclo de Exclusao Logica (Tombstone / isDeleted)...\n");
     jade_delete_object(db, user_dnt, true);
     jade_find_by_dnt(db, user_dnt, &found);
-    printf("      Objeto DNT %u marcado como isDeleted=%d, novo sAMAccountName: %ls\n", 
-           user_dnt, found.is_deleted ? 1 : 0, found.sam_account_name);
+    char sam_buf[256];
+    jade_str_to_ascii(found.sam_account_name, sam_buf, sizeof(sam_buf));
+    printf("      Objeto DNT %u marcado como isDeleted=%d, novo sAMAccountName: %s\n",
+           user_dnt, found.is_deleted ? 1 : 0, sam_buf);
 
     uint32_t total = 0;
     jade_count_objects(db, &total);
@@ -132,12 +161,13 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     print_banner();
 
-    char base_dir[MAX_PATH] = "F:\\Projects\\Jade\\data_simulated";
+    char base_dir[512] = "./data_simulated";
     if (argc > 1) {
-        strncpy(base_dir, argv[1], MAX_PATH - 1);
+        strncpy(base_dir, argv[1], sizeof(base_dir) - 1);
+        base_dir[sizeof(base_dir) - 1] = '\0';
     }
 
-    printf("Iniciando validacao do motor JADE sobre esent.dll...\n\n");
+    printf("Iniciando validacao do motor JADE...\n\n");
     int res = run_self_test(base_dir);
     if (res == 0) {
         printf("\n=================================================================\n");
