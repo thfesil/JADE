@@ -23,7 +23,10 @@ namespace Jade.Core.Storage
             if (rc != JadeConstants.Ok || db == IntPtr.Zero)
             {
                 string fullPath = Path.Combine(baseDirectory, databaseName);
-                throw new JadeException(rc, $"Falha ao abrir ou criar o banco ESE em {fullPath}");
+                string hint = OperatingSystem.IsWindows() && (rc == JadeConstants.ErrInitFailed || rc == JadeConstants.ErrDbCreateFailed) && File.Exists(fullPath)
+                    ? " (Verifique se o arquivo .dit ou logs ESE foram criados em uma versao diferente do Windows; mova ou limpe o diretorio de dados ou use JADE_STORAGE_BACKEND=managed.)"
+                    : string.Empty;
+                throw new JadeException(rc, $"Falha ao abrir ou criar o banco ESE em {fullPath}{hint}");
             }
 
             return new NativeJadeBackend(db);
